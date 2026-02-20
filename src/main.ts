@@ -6,7 +6,11 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
   app.enableCors({
-    origin: ['http://localhost:3000', 'https://*.vercel.app'],
+    origin: [
+      'http://localhost:3000',
+      'https://lead-frontend-ebon.vercel.app',
+      /\.vercel\.app$/,
+    ],
     credentials: true,
   });
 
