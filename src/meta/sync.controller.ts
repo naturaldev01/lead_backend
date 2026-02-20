@@ -87,41 +87,50 @@ export class SyncController {
   @Post('sync/leads')
   async syncLeads() {
     const supabase = this.supabaseService.getClient();
+    let totalLeadsInserted = 0;
 
     try {
-      const { data: accounts } = await supabase.from('ad_accounts').select('*');
+      const pages = await this.metaService.getPages();
+      this.logger.log(`Found ${pages.length} pages to sync leads from`);
 
-      for (const account of accounts || []) {
+      for (const page of pages) {
         try {
-          const forms = await this.metaService.getLeadGenForms(account.page_id);
+          this.logger.log(`Syncing leads from page: ${page.name} (${page.id})`);
+          const forms = await this.metaService.getLeadGenFormsWithPageToken(page.id, page.access_token);
+          this.logger.log(`Found ${forms.length} forms for page ${page.name}`);
 
           for (const form of forms) {
-            const leads = await this.metaService.getLeads(form.id);
+            if (!form.leads_count || form.leads_count === 0) continue;
+
+            const leads = await this.metaService.getLeadsWithPageToken(form.id, page.access_token, 100);
+            this.logger.log(`Fetched ${leads.length} leads from form ${form.name}`);
 
             for (const lead of leads) {
               const { data: existingLead } = await supabase
                 .from('leads')
                 .select('id')
                 .eq('lead_id', lead.id)
-                .single();
+                .maybeSingle();
 
               if (!existingLead) {
-                const { data: insertedLead } = await supabase
+                const { data: insertedLead, error: insertError } = await supabase
                   .from('leads')
                   .insert({
                     lead_id: lead.id,
-                    form_id: lead.form_id,
                     form_name: form.name,
-                    ad_id: lead.ad_id,
-                    ad_name: lead.ad_name,
-                    ad_set_id: lead.adset_id,
-                    ad_set_name: lead.adset_name,
-                    ad_account_id: account.id,
+                    ad_name: lead.ad_name || null,
+                    ad_set_name: lead.adset_name || null,
+                    campaign_id: lead.campaign_id || null,
                     source: 'sync',
                     created_at: lead.created_time,
                   })
                   .select()
                   .single();
+
+                if (insertError) {
+                  this.logger.error(`Failed to insert lead ${lead.id}`, insertError);
+                  continue;
+                }
 
                 if (insertedLead && lead.field_data) {
                   for (const field of lead.field_data) {
@@ -132,11 +141,12 @@ export class SyncController {
                     });
                   }
                 }
+                totalLeadsInserted++;
               }
             }
           }
         } catch (error) {
-          this.logger.error(`Failed to sync leads for account ${account.account_id}`, error);
+          this.logger.error(`Failed to sync leads for page ${page.name}`, error);
         }
       }
 
@@ -145,7 +155,8 @@ export class SyncController {
         status: 'success',
       });
 
-      return { success: true, message: 'Leads sync completed' };
+      this.logger.log(`Leads sync completed. Inserted ${totalLeadsInserted} new leads.`);
+      return { success: true, message: `Leads sync completed. Inserted ${totalLeadsInserted} new leads.` };
     } catch (error) {
       this.logger.error('Leads sync failed', error);
       throw error;

@@ -151,4 +151,50 @@ export class MetaService {
       throw error;
     }
   }
+
+  async getPages(): Promise<any[]> {
+    try {
+      const response = await axios.get(`${this.baseUrl}/me/accounts`, {
+        params: {
+          access_token: this.accessToken,
+          fields: 'id,name,access_token',
+        },
+      });
+      return response.data.data || [];
+    } catch (error) {
+      this.logger.error('Failed to fetch pages', error);
+      throw error;
+    }
+  }
+
+  async getLeadGenFormsWithPageToken(pageId: string, pageAccessToken: string): Promise<any[]> {
+    try {
+      const response = await axios.get(`${this.baseUrl}/${pageId}/leadgen_forms`, {
+        params: {
+          access_token: pageAccessToken,
+          fields: 'id,name,status,leads_count',
+        },
+      });
+      return response.data.data || [];
+    } catch (error) {
+      this.logger.error(`Failed to fetch lead gen forms for page ${pageId}`, error);
+      return [];
+    }
+  }
+
+  async getLeadsWithPageToken(formId: string, pageAccessToken: string, limit = 100): Promise<any[]> {
+    try {
+      const response = await axios.get(`${this.baseUrl}/${formId}/leads`, {
+        params: {
+          access_token: pageAccessToken,
+          fields: 'id,created_time,field_data,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,form_id',
+          limit,
+        },
+      });
+      return response.data.data || [];
+    } catch (error) {
+      this.logger.error(`Failed to fetch leads for form ${formId}`, error);
+      return [];
+    }
+  }
 }
