@@ -26,8 +26,6 @@ export class CampaignsService {
         ad_accounts (account_name),
         leads (count)
       `)
-      .gte('created_at', startDate)
-      .lte('created_at', endDate)
       .order('spend_usd', { ascending: false });
 
     if (accountId) {

@@ -17,9 +17,7 @@ export class DashboardService {
 
     let campaignQuery = supabase
       .from('campaigns')
-      .select('spend_usd')
-      .gte('created_at', startDate)
-      .lte('created_at', endDate);
+      .select('spend_usd');
 
     let leadsQuery = supabase
       .from('leads')
