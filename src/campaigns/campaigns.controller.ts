@@ -7,12 +7,20 @@ export class CampaignsController {
 
   @Get()
   async getCampaigns(
-    @Query('startDate') startDate: string,
-    @Query('endDate') endDate: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
     @Query('accountId') accountId?: string,
     @Query('search') search?: string,
   ) {
     return this.campaignsService.getCampaigns(startDate, endDate, accountId, search);
+  }
+
+  @Get('hierarchy')
+  async getHierarchy(
+    @Query('accountId') accountId?: string,
+    @Query('search') search?: string,
+  ) {
+    return this.campaignsService.getHierarchy(accountId, search);
   }
 
   @Post('sync')

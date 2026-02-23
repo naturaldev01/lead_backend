@@ -8,54 +8,54 @@ export class DashboardService {
   constructor(private supabaseService: SupabaseService) {}
 
   async getStats(
-    startDate: string,
-    endDate: string,
+    startDate?: string,
+    endDate?: string,
     accountId?: string,
     objective?: string,
   ) {
     const supabase = this.supabaseService.getClient();
 
-    let campaignQuery = supabase
-      .from('campaigns')
-      .select('spend_usd');
+    let totalSpend = 0;
+    let totalLeads = 0;
 
-    let leadsQuery = supabase
-      .from('leads')
-      .select('id', { count: 'exact' })
-      .gte('created_at', startDate)
-      .lte('created_at', endDate);
+    // If date range is provided, use daily_insights table with SQL aggregation
+    if (startDate && endDate) {
+      const { data, error } = await supabase.rpc('get_daily_insights_totals', {
+        start_date: startDate,
+        end_date: endDate,
+        account_id: accountId || null,
+      });
 
-    if (accountId) {
-      campaignQuery = campaignQuery.eq('ad_account_id', accountId);
-      leadsQuery = leadsQuery.eq('ad_account_id', accountId);
+      if (!error && data) {
+        totalSpend = parseFloat(data.total_spend) || 0;
+        totalLeads = parseInt(data.total_leads) || 0;
+      }
+    } else {
+      // All time - use campaigns table with SQL aggregation
+      const { data, error } = await supabase.rpc('get_campaigns_totals', {
+        account_id: accountId || null,
+        campaign_objective: objective || null,
+      });
+
+      if (!error && data) {
+        totalSpend = parseFloat(data.total_spend) || 0;
+        totalLeads = parseInt(data.total_leads) || 0;
+      }
     }
 
-    if (objective) {
-      campaignQuery = campaignQuery.eq('type', objective);
-    }
+    // Get sync logs
+    const { data: syncLogs } = await supabase
+      .from('sync_logs')
+      .select('type, created_at')
+      .order('created_at', { ascending: false })
+      .limit(2);
 
-    const [campaignResult, leadsResult, syncResult] = await Promise.all([
-      campaignQuery,
-      leadsQuery,
-      supabase
-        .from('sync_logs')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(2),
-    ]);
-
-    const totalSpend = (campaignResult.data || []).reduce(
-      (sum, c) => sum + (c.spend_usd || 0),
-      0,
-    );
-
-    const syncLogs = syncResult.data || [];
-    const spendSync = syncLogs.find((s) => s.type === 'spend');
-    const leadsSync = syncLogs.find((s) => s.type === 'leads');
+    const spendSync = (syncLogs || []).find((s) => s.type === 'spend');
+    const leadsSync = (syncLogs || []).find((s) => s.type === 'leads' || s.type === 'spend');
 
     return {
       totalSpend,
-      totalLeads: leadsResult.count || 0,
+      totalLeads,
       lastSpendSync: spendSync?.created_at || null,
       lastLeadsSync: leadsSync?.created_at || null,
     };

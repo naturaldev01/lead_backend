@@ -7,8 +7,8 @@ export class DashboardController {
 
   @Get()
   async getStats(
-    @Query('startDate') startDate: string,
-    @Query('endDate') endDate: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
     @Query('accountId') accountId?: string,
     @Query('objective') objective?: string,
   ) {
