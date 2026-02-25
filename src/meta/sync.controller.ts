@@ -34,6 +34,49 @@ export class SyncController {
     return this.syncProgress;
   }
 
+  @Get('debug/campaign-actions')
+  async debugCampaignActions(
+    @Query('accountId') accountId: string,
+    @Query('campaignName') campaignName?: string,
+    @Query('date') date?: string,
+  ) {
+    if (!accountId) {
+      return { error: 'accountId is required' };
+    }
+
+    const accountIdClean = accountId.replace('act_', '');
+    const singleDate = date || new Date().toISOString().split('T')[0];
+    
+    this.logger.log(`Debug: Fetching insights for account ${accountIdClean}, date=${singleDate}`);
+
+    const insights = await this.metaService.getCampaignInsights(accountIdClean, singleDate, singleDate);
+    
+    const results = insights
+      .filter(i => !campaignName || i.campaign_name?.toLowerCase().includes(campaignName.toLowerCase()))
+      .slice(0, 10)
+      .map(insight => {
+        const actionsSummary: Record<string, number> = {};
+        if (insight.actions) {
+          for (const action of insight.actions) {
+            actionsSummary[action.action_type] = parseInt(action.value || '0', 10);
+          }
+        }
+        return {
+          campaign_id: insight.campaign_id,
+          campaign_name: insight.campaign_name,
+          spend: insight.spend,
+          actions: actionsSummary,
+          raw_actions: insight.actions,
+        };
+      });
+
+    return { 
+      dateRange: singleDate,
+      count: results.length,
+      campaigns: results 
+    };
+  }
+
   @Get('sync/forms')
   async getAvailableForms() {
     const forms: any[] = [];
@@ -384,11 +427,11 @@ export class SyncController {
 
         // Update campaign spends and leads count from insights
         const campaignUpdates = campaignInsights.map(insight => {
-          // Extract lead count from actions
+          // Extract lead count from actions - only count actual form leads
           let leadsCount = 0;
           if (insight.actions) {
             for (const action of insight.actions) {
-              if (['lead', 'onsite_conversion.lead', 'onsite_conversion.lead_grouped', 'onsite_web_lead'].includes(action.action_type)) {
+              if (action.action_type === 'lead') {
                 leadsCount += parseInt(action.value || '0', 10);
               }
             }
@@ -412,7 +455,7 @@ export class SyncController {
           let leadsCount = 0;
           if (insight.actions) {
             for (const action of insight.actions) {
-              if (['lead', 'onsite_conversion.lead', 'onsite_conversion.lead_grouped', 'onsite_web_lead'].includes(action.action_type)) {
+              if (action.action_type === 'lead') {
                 leadsCount += parseInt(action.value || '0', 10);
               }
             }
@@ -436,7 +479,7 @@ export class SyncController {
           let leadsCount = 0;
           if (insight.actions) {
             for (const action of insight.actions) {
-              if (['lead', 'onsite_conversion.lead', 'onsite_conversion.lead_grouped', 'onsite_web_lead'].includes(action.action_type)) {
+              if (action.action_type === 'lead') {
                 leadsCount += parseInt(action.value || '0', 10);
               }
             }
@@ -463,7 +506,8 @@ export class SyncController {
             let leadsCount = 0;
             if (insight.actions) {
               for (const action of insight.actions) {
-                if (['lead', 'onsite_conversion.lead', 'onsite_conversion.lead_grouped', 'onsite_web_lead'].includes(action.action_type)) {
+                // Only count actual form leads - 'lead' is the primary action type for lead gen forms
+                if (action.action_type === 'lead') {
                   leadsCount += parseInt(action.value || '0', 10);
                 }
               }
