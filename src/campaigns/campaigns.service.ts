@@ -1,10 +1,21 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../common/supabase.service';
 import { MetaService } from '../meta/meta.service';
+import { parseCountriesFromName } from '../common/country-parser';
+
+interface HierarchyCacheEntry {
+  data: unknown[];
+  timestamp: number;
+}
 
 @Injectable()
 export class CampaignsService {
   private readonly logger = new Logger(CampaignsService.name);
+  private countriesCache: string[] | null = null;
+  private countriesCacheTime: number = 0;
+  private hierarchyCache: Map<string, HierarchyCacheEntry> = new Map();
+  private readonly CACHE_TTL = 60 * 1000; // 1 minute for hierarchy
+  private readonly COUNTRIES_CACHE_TTL = 5 * 60 * 1000; // 5 minutes for countries
 
   constructor(
     private supabaseService: SupabaseService,
@@ -54,7 +65,15 @@ export class CampaignsService {
     }));
   }
 
-  async getHierarchy(accountId?: string, search?: string) {
+  async getHierarchy(accountId?: string, search?: string, country?: string, level?: string) {
+    // Generate cache key
+    const cacheKey = `${accountId || ''}_${search || ''}_${country || ''}_${level || ''}`;
+    const cached = this.hierarchyCache.get(cacheKey);
+    
+    if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
+      return cached.data;
+    }
+
     const supabase = this.supabaseService.getClient();
 
     let campaignQuery = supabase
@@ -83,6 +102,12 @@ export class CampaignsService {
 
     if (search) {
       campaignQuery = campaignQuery.ilike('name', `%${search}%`);
+    }
+
+    // Pre-filter by country at database level for better performance
+    if (country) {
+      const countryPattern = `%${country}%`;
+      adQuery = adQuery.ilike('name', countryPattern);
     }
 
     const [campaignsResult, adSetsResult, adsResult] = await Promise.all([
@@ -142,36 +167,139 @@ export class CampaignsService {
       return acc;
     }, {});
 
-    return campaigns.map((campaign) => ({
-      id: campaign.id,
-      campaignId: campaign.campaign_id,
-      name: campaign.name,
-      adAccountId: campaign.ad_account_id,
-      adAccountName: campaign.ad_accounts?.account_name || '',
-      type: campaign.type,
-      status: campaign.status,
-      spendUsd: campaign.spend_usd || 0,
-      leads: campaign.insights_leads_count || leadsCountByCampaign[campaign.campaign_id] || 0,
-      formLeads: leadsCountByCampaign[campaign.campaign_id] || 0,
-      insightsLeads: campaign.insights_leads_count || 0,
-      adSets: (adSetsGroupedByCampaign[campaign.campaign_id] || []).map((adSet) => ({
-        id: adSet.id,
-        adSetId: adSet.adset_id,
-        name: adSet.name,
-        status: adSet.status,
-        optimizationGoal: adSet.optimization_goal,
-        spendUsd: adSet.spend_usd || 0,
-        leads: adSet.insights_leads_count || 0,
-        ads: (adSet.ads || []).map((ad: { id: string; ad_id: string; name: string; status: string; spend_usd: number; insights_leads_count?: number }) => ({
+    const allCampaigns = campaigns.map((campaign) => {
+      const adSetsWithCountries = (adSetsGroupedByCampaign[campaign.campaign_id] || []).map((adSet) => {
+        const adsWithCountries = (adSet.ads || []).map((ad: { id: string; ad_id: string; name: string; status: string; spend_usd: number; insights_leads_count?: number }) => ({
           id: ad.id,
           adId: ad.ad_id,
           name: ad.name,
           leads: ad.insights_leads_count || 0,
           status: ad.status,
           spendUsd: ad.spend_usd || 0,
-        })),
-      })),
-    }));
+          countries: parseCountriesFromName(ad.name),
+        }));
+
+        const adSetCountries = parseCountriesFromName(adSet.name);
+        const hasAdCountries = adsWithCountries.some((ad: { countries: string[] }) => ad.countries.length > 0);
+
+        return {
+          id: adSet.id,
+          adSetId: adSet.adset_id,
+          name: adSet.name,
+          status: adSet.status,
+          optimizationGoal: adSet.optimization_goal,
+          spendUsd: adSet.spend_usd || 0,
+          leads: adSet.insights_leads_count || 0,
+          countries: hasAdCountries ? [] : adSetCountries,
+          ads: adsWithCountries,
+        };
+      });
+
+      const hasLowerLevelCountries = adSetsWithCountries.some(
+        (adSet: { countries: string[]; ads: { countries: string[] }[] }) => 
+          adSet.countries.length > 0 || adSet.ads.some((ad) => ad.countries.length > 0)
+      );
+      const campaignCountries = hasLowerLevelCountries ? [] : parseCountriesFromName(campaign.name);
+
+      return {
+        id: campaign.id,
+        campaignId: campaign.campaign_id,
+        name: campaign.name,
+        adAccountId: campaign.ad_account_id,
+        adAccountName: campaign.ad_accounts?.account_name || '',
+        type: campaign.type,
+        status: campaign.status,
+        countries: campaignCountries,
+        spendUsd: campaign.spend_usd || 0,
+        leads: campaign.insights_leads_count || leadsCountByCampaign[campaign.campaign_id] || 0,
+        formLeads: leadsCountByCampaign[campaign.campaign_id] || 0,
+        insightsLeads: campaign.insights_leads_count || 0,
+        adSets: adSetsWithCountries,
+      };
+    });
+
+    // If no filters, return and cache
+    if (!country && !level) {
+      this.hierarchyCache.set(cacheKey, { data: allCampaigns, timestamp: Date.now() });
+      return allCampaigns;
+    }
+
+    // Apply filters
+    const result = allCampaigns.map((campaign) => {
+      let filteredAdSets = campaign.adSets;
+
+      // Apply country filter at all levels
+      if (country) {
+        const countryUpper = country.toUpperCase();
+        
+        filteredAdSets = filteredAdSets.map((adSet: { countries: string[]; ads: { countries: string[]; name: string; id: string; adId: string; leads: number; status: string; spendUsd: number }[]; id: string; adSetId: string; name: string; status: string; optimizationGoal: string; spendUsd: number; leads: number }) => ({
+          ...adSet,
+          ads: adSet.ads.filter((ad) => ad.countries.includes(countryUpper)),
+        })).filter((adSet: { countries: string[]; ads: unknown[] }) => 
+          adSet.countries.includes(countryUpper) || adSet.ads.length > 0
+        );
+
+        const hasCountryInCampaign = campaign.countries.includes(countryUpper);
+        if (!hasCountryInCampaign && filteredAdSets.length === 0) {
+          return null;
+        }
+      }
+
+      // Apply level filter
+      if (level === 'ad') {
+        filteredAdSets = filteredAdSets.filter((adSet: { ads: unknown[] }) => adSet.ads.length > 0);
+        if (filteredAdSets.length === 0) {
+          return null;
+        }
+      } else if (level === 'adset') {
+        if (filteredAdSets.length === 0) {
+          return null;
+        }
+      }
+
+      return {
+        ...campaign,
+        adSets: filteredAdSets,
+      };
+    }).filter((campaign): campaign is NonNullable<typeof campaign> => campaign !== null);
+
+    // Cache the result
+    this.hierarchyCache.set(cacheKey, { data: result, timestamp: Date.now() });
+    
+    return result;
+  }
+
+  async getAvailableCountries() {
+    // Return cached if still valid
+    if (this.countriesCache && Date.now() - this.countriesCacheTime < this.COUNTRIES_CACHE_TTL) {
+      return this.countriesCache;
+    }
+
+    const supabase = this.supabaseService.getClient();
+    const countries = new Set<string>();
+
+    // Get all campaign, ad set, and ad names
+    const [campaignsResult, adSetsResult, adsResult] = await Promise.all([
+      supabase.from('campaigns').select('name'),
+      supabase.from('ad_sets').select('name'),
+      supabase.from('ads').select('name'),
+    ]);
+
+    const allNames = [
+      ...(campaignsResult.data || []).map((c) => c.name),
+      ...(adSetsResult.data || []).map((a) => a.name),
+      ...(adsResult.data || []).map((a) => a.name),
+    ];
+
+    for (const name of allNames) {
+      const parsed = parseCountriesFromName(name);
+      parsed.forEach((c) => countries.add(c));
+    }
+
+    this.countriesCache = Array.from(countries).sort();
+    this.countriesCacheTime = Date.now();
+    
+    return this.countriesCache;
   }
 
   async syncFromMeta() {

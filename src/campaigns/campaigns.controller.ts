@@ -19,8 +19,15 @@ export class CampaignsController {
   async getHierarchy(
     @Query('accountId') accountId?: string,
     @Query('search') search?: string,
+    @Query('country') country?: string,
+    @Query('level') level?: string,
   ) {
-    return this.campaignsService.getHierarchy(accountId, search);
+    return this.campaignsService.getHierarchy(accountId, search, country, level);
+  }
+
+  @Get('countries')
+  async getCountries() {
+    return this.campaignsService.getAvailableCountries();
   }
 
   @Post('sync')
