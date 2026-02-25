@@ -21,8 +21,10 @@ export class CampaignsController {
     @Query('search') search?: string,
     @Query('country') country?: string,
     @Query('level') level?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
   ) {
-    return this.campaignsService.getHierarchy(accountId, search, country, level);
+    return this.campaignsService.getHierarchy(accountId, search, country, level, startDate, endDate);
   }
 
   @Get('countries')
