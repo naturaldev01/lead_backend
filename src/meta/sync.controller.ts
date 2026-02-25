@@ -77,6 +77,56 @@ export class SyncController {
     };
   }
 
+  @Post('fix-leads')
+  async fixLeadCounts() {
+    const supabase = this.supabaseService.getClient();
+    
+    // Fix daily_insights - divide by 2
+    const { data: dailyData, error: dailyError } = await supabase
+      .from('daily_insights')
+      .update({ leads_count: supabase.rpc('div2', {}) })
+      .gt('leads_count', 0);
+    
+    // Direct SQL approach - update all records
+    const { error: error1 } = await supabase.rpc('fix_lead_counts_daily');
+    const { error: error2 } = await supabase.rpc('fix_lead_counts_campaigns');
+    
+    if (error1 || error2) {
+      // Fallback: manually fetch and update
+      const { data: insights } = await supabase
+        .from('daily_insights')
+        .select('id, leads_count')
+        .gt('leads_count', 0);
+      
+      if (insights) {
+        for (const row of insights) {
+          await supabase
+            .from('daily_insights')
+            .update({ leads_count: Math.floor(row.leads_count / 2) })
+            .eq('id', row.id);
+        }
+      }
+      
+      const { data: campaigns } = await supabase
+        .from('campaigns')
+        .select('id, insights_leads_count')
+        .gt('insights_leads_count', 0);
+      
+      if (campaigns) {
+        for (const row of campaigns) {
+          await supabase
+            .from('campaigns')
+            .update({ insights_leads_count: Math.floor(row.insights_leads_count / 2) })
+            .eq('id', row.id);
+        }
+      }
+      
+      return { success: true, message: 'Lead counts fixed via fallback method' };
+    }
+    
+    return { success: true, message: 'Lead counts fixed' };
+  }
+
   @Get('sync/forms')
   async getAvailableForms() {
     const forms: any[] = [];
