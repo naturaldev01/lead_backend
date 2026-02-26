@@ -52,8 +52,8 @@ export class MetaService {
         allCampaigns.push(...data);
         nextUrl = response.data.paging?.next || null;
         
-        if (allCampaigns.length >= 10000) {
-          this.logger.warn(`Reached 10000 campaigns limit for account ${adAccountId}`);
+        if (allCampaigns.length >= 100000) {
+          this.logger.warn(`Reached 100000 campaigns limit for account ${adAccountId}`);
           break;
         }
       }
@@ -75,8 +75,8 @@ export class MetaService {
         allAdSets.push(...data);
         nextUrl = response.data.paging?.next || null;
         
-        if (allAdSets.length >= 10000) {
-          this.logger.warn(`Reached 10000 ad sets limit for account ${adAccountId}`);
+        if (allAdSets.length >= 100000) {
+          this.logger.warn(`Reached 100000 ad sets limit for account ${adAccountId}`);
           break;
         }
       }
@@ -98,8 +98,8 @@ export class MetaService {
         allAds.push(...data);
         nextUrl = response.data.paging?.next || null;
         
-        if (allAds.length >= 10000) {
-          this.logger.warn(`Reached 10000 ads limit for account ${adAccountId}`);
+        if (allAds.length >= 100000) {
+          this.logger.warn(`Reached 100000 ads limit for account ${adAccountId}`);
           break;
         }
       }
@@ -150,8 +150,8 @@ export class MetaService {
           await this.sleep(300);
         }
         
-        if (allInsights.length >= 10000) {
-          this.logger.warn(`Reached 10000 ${level} insights limit for account ${adAccountId}`);
+        if (allInsights.length >= 100000) {
+          this.logger.warn(`Reached 100000 ${level} insights limit for account ${adAccountId}`);
           break;
         }
       } catch (error: any) {

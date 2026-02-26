@@ -24,6 +24,123 @@ export class SyncController {
     totalForms: 0,
   };
 
+  private extractLeadsCount(actions: Array<{ action_type?: string; value?: string }> = []): number {
+    // Meta can report lead metrics under multiple action_type keys.
+    // Use the maximum lead-like metric to avoid counting the same event twice.
+    let maxLeadCount = 0;
+
+    for (const action of actions) {
+      const actionType = (action.action_type || '').toLowerCase();
+      const value = parseInt(action.value || '0', 10) || 0;
+
+      if (value <= 0) continue;
+
+      const isLeadLike =
+        actionType === 'lead' ||
+        actionType === 'omni_lead' ||
+        actionType === 'onsite_conversion.lead' ||
+        actionType === 'onsite_conversion.lead_grouped' ||
+        actionType === 'offsite_conversion.lead' ||
+        actionType === 'offsite_conversion.fb_pixel_lead' ||
+        actionType.includes('lead');
+
+      if (isLeadLike && value > maxLeadCount) {
+        maxLeadCount = value;
+      }
+    }
+
+    return maxLeadCount;
+  }
+
+  private normalizeAccountId(accountId?: string): string {
+    return (accountId || '').replace(/^act_/, '');
+  }
+
+  private async sleep(ms: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private isRetriableError(message: string): boolean {
+    const text = message.toLowerCase();
+    return (
+      text.includes('502') ||
+      text.includes('503') ||
+      text.includes('504') ||
+      text.includes('bad gateway') ||
+      text.includes('gateway') ||
+      text.includes('timeout') ||
+      text.includes('fetch failed') ||
+      text.includes('network') ||
+      text.includes('econnreset') ||
+      text.includes('etimedout')
+    );
+  }
+
+  private async executeSupabaseWriteWithRetry(
+    label: string,
+    operation: () => PromiseLike<{ error?: { message?: string } | null }>,
+    maxRetries = 5,
+  ): Promise<void> {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      const result = await operation();
+      const error = result?.error;
+
+      if (!error) {
+        return;
+      }
+
+      const message = error.message || 'Unknown Supabase error';
+      const shouldRetry = this.isRetriableError(message) && attempt < maxRetries;
+
+      if (!shouldRetry) {
+        throw new Error(`${label}: ${message}`);
+      }
+
+      const waitMs = Math.min(1000 * Math.pow(2, attempt - 1), 8000);
+      this.logger.warn(`${label} (attempt ${attempt}/${maxRetries}) failed: ${message}. Retrying in ${waitMs}ms`);
+      await this.sleep(waitMs);
+    }
+  }
+
+  private chunkArray<T>(items: T[], chunkSize: number): T[][] {
+    const chunks: T[][] = [];
+    for (let i = 0; i < items.length; i += chunkSize) {
+      chunks.push(items.slice(i, i + chunkSize));
+    }
+    return chunks;
+  }
+
+  private async updateInsightsInBatches(
+    supabase: any,
+    table: 'campaigns' | 'ad_sets' | 'ads',
+    idKey: 'campaign_id' | 'adset_id' | 'ad_id',
+    insights: any[],
+    label: string,
+  ): Promise<void> {
+    const batches = this.chunkArray(insights, 50);
+
+    for (const batch of batches) {
+      await Promise.all(
+        batch.map(async (insight) => {
+          const entityId = insight[idKey];
+          const leadsCount = this.extractLeadsCount(insight.actions || []);
+
+          await this.executeSupabaseWriteWithRetry(
+            `Failed to update ${label} ${entityId}`,
+            () =>
+              supabase
+                .from(table)
+                .update({
+                  spend_usd: parseFloat(insight.spend || '0'),
+                  insights_leads_count: leadsCount,
+                })
+                .eq(idKey, entityId),
+          );
+        }),
+      );
+    }
+  }
+
   constructor(
     private metaService: MetaService,
     private supabaseService: SupabaseService,
@@ -395,19 +512,37 @@ export class SyncController {
     const supabase = this.supabaseService.getClient();
 
     try {
-      const adAccounts = await this.metaService.getAdAccounts();
+      const rawAdAccounts = await this.metaService.getAdAccounts();
+      const allowedAccounts = this.metaService.getAllowedAdAccounts();
+      const allowedSet = new Set(
+        (allowedAccounts || [])
+          .map((id) => this.normalizeAccountId(id))
+          .filter(Boolean),
+      );
+
+      const adAccounts =
+        allowedSet.size > 0
+          ? rawAdAccounts.filter((account) =>
+              allowedSet.has(this.normalizeAccountId(account.account_id || account.id)),
+            )
+          : rawAdAccounts;
 
       for (const account of adAccounts) {
-        await supabase.from('ad_accounts').upsert(
+        const accountId = this.normalizeAccountId(account.account_id || account.id);
+
+        const { error: accountUpsertError } = await supabase.from('ad_accounts').upsert(
           {
-            account_id: account.account_id,
+            account_id: accountId,
             account_name: account.name,
           },
           { onConflict: 'account_id' },
         );
+        if (accountUpsertError) {
+          throw new Error(`Failed to upsert ad account ${accountId}: ${accountUpsertError.message}`);
+        }
 
         // Batch upsert campaigns
-        const campaigns = await this.metaService.getCampaigns(account.account_id);
+        const campaigns = await this.metaService.getCampaigns(accountId);
         this.logger.log(`Found ${campaigns.length} campaigns for account ${account.name}`);
         
         if (campaigns.length > 0) {
@@ -416,13 +551,19 @@ export class SyncController {
             name: campaign.name,
             type: campaign.objective,
             status: campaign.status,
-            ad_account_id: account.account_id,
+            ad_account_id: accountId,
           }));
-          await supabase.from('campaigns').upsert(campaignsData, { onConflict: 'campaign_id' });
+          for (let i = 0; i < campaignsData.length; i += 500) {
+            const chunk = campaignsData.slice(i, i + 500);
+            const { error } = await supabase.from('campaigns').upsert(chunk, { onConflict: 'campaign_id' });
+            if (error) {
+              throw new Error(`Failed to upsert campaigns for account ${accountId}: ${error.message}`);
+            }
+          }
         }
 
         // Batch upsert ad sets
-        const adSets = await this.metaService.getAdSets(account.account_id);
+        const adSets = await this.metaService.getAdSets(accountId);
         this.logger.log(`Found ${adSets.length} ad sets for account ${account.name}`);
 
         if (adSets.length > 0) {
@@ -430,19 +571,22 @@ export class SyncController {
             adset_id: adSet.id,
             name: adSet.name,
             campaign_id: adSet.campaign_id,
-            ad_account_id: account.account_id,
+            ad_account_id: accountId,
             status: adSet.status,
             optimization_goal: adSet.optimization_goal,
           }));
           // Batch in chunks of 500 to avoid payload limits
           for (let i = 0; i < adSetsData.length; i += 500) {
             const chunk = adSetsData.slice(i, i + 500);
-            await supabase.from('ad_sets').upsert(chunk, { onConflict: 'adset_id' });
+            const { error } = await supabase.from('ad_sets').upsert(chunk, { onConflict: 'adset_id' });
+            if (error) {
+              throw new Error(`Failed to upsert ad sets for account ${accountId}: ${error.message}`);
+            }
           }
         }
 
         // Batch upsert ads
-        const ads = await this.metaService.getAds(account.account_id);
+        const ads = await this.metaService.getAds(accountId);
         this.logger.log(`Found ${ads.length} ads for account ${account.name}`);
 
         if (ads.length > 0) {
@@ -451,12 +595,15 @@ export class SyncController {
             name: ad.name,
             adset_id: ad.adset_id,
             campaign_id: ad.campaign_id,
-            ad_account_id: account.account_id,
+            ad_account_id: accountId,
             status: ad.status,
           }));
           for (let i = 0; i < adsData.length; i += 500) {
             const chunk = adsData.slice(i, i + 500);
-            await supabase.from('ads').upsert(chunk, { onConflict: 'ad_id' });
+            const { error } = await supabase.from('ads').upsert(chunk, { onConflict: 'ad_id' });
+            if (error) {
+              throw new Error(`Failed to upsert ads for account ${accountId}: ${error.message}`);
+            }
           }
         }
 
@@ -469,82 +616,56 @@ export class SyncController {
         
         // Get and update campaign insights (spend + leads count)
         const campaignInsights = await this.metaService.getCampaignInsights(
-          account.account_id,
+          accountId,
           startDateStr,
           endDateStr,
         );
         this.logger.log(`Found ${campaignInsights.length} campaign insights`);
 
-        // Update campaign spends and leads count from insights
-        const campaignUpdates = campaignInsights.map(insight => {
-          // Extract lead count from actions - only count actual form leads
-          let leadsCount = 0;
-          if (insight.actions) {
-            for (const action of insight.actions) {
-              if (action.action_type === 'lead') {
-                leadsCount += parseInt(action.value || '0', 10);
-              }
-            }
-          }
-          return supabase.from('campaigns').update({ 
-            spend_usd: parseFloat(insight.spend || '0'),
-            insights_leads_count: leadsCount,
-          }).eq('campaign_id', insight.campaign_id);
-        });
-        await Promise.all(campaignUpdates);
+        await this.updateInsightsInBatches(
+          supabase,
+          'campaigns',
+          'campaign_id',
+          campaignInsights,
+          'campaign',
+        );
 
         // Get and update ad set insights
         const adSetInsights = await this.metaService.getAdSetInsights(
-          account.account_id,
+          accountId,
           startDateStr,
           endDateStr,
         );
         this.logger.log(`Found ${adSetInsights.length} ad set insights`);
 
-        const adSetUpdates = adSetInsights.map(insight => {
-          let leadsCount = 0;
-          if (insight.actions) {
-            for (const action of insight.actions) {
-              if (action.action_type === 'lead') {
-                leadsCount += parseInt(action.value || '0', 10);
-              }
-            }
-          }
-          return supabase.from('ad_sets').update({ 
-            spend_usd: parseFloat(insight.spend || '0'),
-            insights_leads_count: leadsCount,
-          }).eq('adset_id', insight.adset_id);
-        });
-        await Promise.all(adSetUpdates);
+        await this.updateInsightsInBatches(
+          supabase,
+          'ad_sets',
+          'adset_id',
+          adSetInsights,
+          'ad set',
+        );
 
         // Get and update ad insights
         const adInsights = await this.metaService.getAdInsights(
-          account.account_id,
+          accountId,
           startDateStr,
           endDateStr,
         );
         this.logger.log(`Found ${adInsights.length} ad insights`);
 
-        const adUpdates = adInsights.map(insight => {
-          let leadsCount = 0;
-          if (insight.actions) {
-            for (const action of insight.actions) {
-              if (action.action_type === 'lead') {
-                leadsCount += parseInt(action.value || '0', 10);
-              }
-            }
-          }
-          return supabase.from('ads').update({ 
-            spend_usd: parseFloat(insight.spend || '0'),
-            insights_leads_count: leadsCount,
-          }).eq('ad_id', insight.ad_id);
-        });
-        await Promise.all(adUpdates);
+        await this.updateInsightsInBatches(
+          supabase,
+          'ads',
+          'ad_id',
+          adInsights,
+          'ad',
+        );
 
         // Fetch and save daily insights for date filtering
         this.logger.log(`Fetching daily insights for account ${account.name}`);
         const dailyInsights = await this.metaService.getDailyInsights(
-          account.account_id,
+          accountId,
           startDateStr,
           endDateStr,
           'campaign',
@@ -553,15 +674,7 @@ export class SyncController {
 
         if (dailyInsights.length > 0) {
           const dailyData = dailyInsights.map(insight => {
-            let leadsCount = 0;
-            if (insight.actions) {
-              for (const action of insight.actions) {
-                // Only count actual form leads - 'lead' is the primary action type for lead gen forms
-                if (action.action_type === 'lead') {
-                  leadsCount += parseInt(action.value || '0', 10);
-                }
-              }
-            }
+            const leadsCount = this.extractLeadsCount(insight.actions || []);
             return {
               date: insight.date_start,
               campaign_id: insight.campaign_id,
@@ -570,26 +683,40 @@ export class SyncController {
               leads_count: leadsCount,
               impressions: parseInt(insight.impressions || '0', 10),
               clicks: parseInt(insight.clicks || '0', 10),
-              ad_account_id: account.account_id,
+              ad_account_id: accountId,
             };
           });
 
-          // Batch upsert daily insights in chunks
+          await this.executeSupabaseWriteWithRetry(
+            `Failed to clear daily insights for account ${accountId}`,
+            () =>
+              supabase
+                .from('daily_insights')
+                .delete()
+                .eq('ad_account_id', accountId)
+                .gte('date', startDateStr)
+                .lte('date', endDateStr),
+          );
+
+          // Batch insert daily insights in chunks
           for (let i = 0; i < dailyData.length; i += 500) {
             const chunk = dailyData.slice(i, i + 500);
-            await supabase.from('daily_insights').upsert(chunk, { 
-              onConflict: 'date,campaign_id',
-              ignoreDuplicates: false,
-            });
+            await this.executeSupabaseWriteWithRetry(
+              `Failed to insert daily insights for account ${accountId}`,
+              () => supabase.from('daily_insights').insert(chunk),
+            );
           }
           this.logger.log(`Saved ${dailyData.length} daily insights for account ${account.name}`);
         }
       }
 
-      await supabase.from('sync_logs').insert({
+      const { error: syncLogError } = await supabase.from('sync_logs').insert({
         type: 'spend',
         status: 'success',
       });
+      if (syncLogError) {
+        this.logger.warn(`Failed to write success sync log: ${syncLogError.message}`);
+      }
 
       return { success: true, message: 'Sync completed successfully' };
     } catch (error) {
