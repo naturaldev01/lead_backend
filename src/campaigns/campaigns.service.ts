@@ -121,12 +121,14 @@ export class CampaignsService {
     const ads = adsResult.data || [];
 
     // If date range is specified, fetch aggregated data from daily_insights
-    let dateRangeSpendByLevel: Record<string, { spend: number; leads: number }> = {};
+    let dateRangeSpendByCampaign: Record<string, { spend: number; leads: number }> = {};
+    let dateRangeSpendByAdSet: Record<string, { spend: number; leads: number }> = {};
+    let dateRangeSpendByAd: Record<string, { spend: number; leads: number }> = {};
     
     if (startDate && endDate) {
       let insightsQuery = supabase
         .from('daily_insights')
-        .select('campaign_id, spend_usd, leads_count')
+        .select('campaign_id, adset_id, ad_id, spend_usd, leads_count')
         .gte('date', startDate)
         .lte('date', endDate);
       
@@ -137,16 +139,37 @@ export class CampaignsService {
       const { data: insightsData } = await insightsQuery;
       
       if (insightsData) {
-        // Aggregate by campaign_id
-        dateRangeSpendByLevel = insightsData.reduce((acc: Record<string, { spend: number; leads: number }>, row) => {
-          const key = row.campaign_id;
-          if (!acc[key]) {
-            acc[key] = { spend: 0, leads: 0 };
+        for (const row of insightsData) {
+          const spend = Number(row.spend_usd) || 0;
+          const leads = row.leads_count || 0;
+          
+          // Aggregate by campaign
+          if (row.campaign_id) {
+            if (!dateRangeSpendByCampaign[row.campaign_id]) {
+              dateRangeSpendByCampaign[row.campaign_id] = { spend: 0, leads: 0 };
+            }
+            dateRangeSpendByCampaign[row.campaign_id].spend += spend;
+            dateRangeSpendByCampaign[row.campaign_id].leads += leads;
           }
-          acc[key].spend += row.spend_usd || 0;
-          acc[key].leads += row.leads_count || 0;
-          return acc;
-        }, {});
+          
+          // Aggregate by ad set
+          if (row.adset_id) {
+            if (!dateRangeSpendByAdSet[row.adset_id]) {
+              dateRangeSpendByAdSet[row.adset_id] = { spend: 0, leads: 0 };
+            }
+            dateRangeSpendByAdSet[row.adset_id].spend += spend;
+            dateRangeSpendByAdSet[row.adset_id].leads += leads;
+          }
+          
+          // Aggregate by ad
+          if (row.ad_id) {
+            if (!dateRangeSpendByAd[row.ad_id]) {
+              dateRangeSpendByAd[row.ad_id] = { spend: 0, leads: 0 };
+            }
+            dateRangeSpendByAd[row.ad_id].spend += spend;
+            dateRangeSpendByAd[row.ad_id].leads += leads;
+          }
+        }
       }
     }
 
@@ -199,15 +222,26 @@ export class CampaignsService {
 
     const allCampaigns = campaigns.map((campaign) => {
       const adSetsWithCountries = (adSetsGroupedByCampaign[campaign.campaign_id] || []).map((adSet) => {
-        const adsWithCountries = (adSet.ads || []).map((ad: { id: string; ad_id: string; name: string; status: string; spend_usd: number; insights_leads_count?: number }) => ({
-          id: ad.id,
-          adId: ad.ad_id,
-          name: ad.name,
-          leads: ad.insights_leads_count || 0,
-          status: ad.status,
-          spendUsd: ad.spend_usd || 0,
-          countries: parseCountriesFromName(ad.name),
-        }));
+        const adsWithCountries = (adSet.ads || []).map((ad: { id: string; ad_id: string; name: string; status: string; spend_usd: number; insights_leads_count?: number }) => {
+          // Use date-filtered data for ad if available
+          const adDateData = dateRangeSpendByAd[ad.ad_id];
+          const adSpend = startDate && endDate
+            ? (adDateData?.spend || 0)
+            : (ad.spend_usd || 0);
+          const adLeads = startDate && endDate
+            ? (adDateData?.leads || 0)
+            : (ad.insights_leads_count || 0);
+          
+          return {
+            id: ad.id,
+            adId: ad.ad_id,
+            name: ad.name,
+            leads: adLeads,
+            status: ad.status,
+            spendUsd: adSpend,
+            countries: parseCountriesFromName(ad.name),
+          };
+        });
 
         const adSetCountries = parseCountriesFromName(adSet.name);
         // Collect all unique countries from ads
@@ -220,14 +254,23 @@ export class CampaignsService {
           ? adSetCountries 
           : Array.from(allAdCountries);
 
+        // Use date-filtered data for ad set if available
+        const adSetDateData = dateRangeSpendByAdSet[adSet.adset_id];
+        const adSetSpend = startDate && endDate
+          ? (adSetDateData?.spend || 0)
+          : (adSet.spend_usd || 0);
+        const adSetLeads = startDate && endDate
+          ? (adSetDateData?.leads || 0)
+          : (adSet.insights_leads_count || 0);
+
         return {
           id: adSet.id,
           adSetId: adSet.adset_id,
           name: adSet.name,
           status: adSet.status,
           optimizationGoal: adSet.optimization_goal,
-          spendUsd: adSet.spend_usd || 0,
-          leads: adSet.insights_leads_count || 0,
+          spendUsd: adSetSpend,
+          leads: adSetLeads,
           countries: effectiveAdSetCountries,
           ads: adsWithCountries,
         };
@@ -242,7 +285,7 @@ export class CampaignsService {
       const campaignCountries = Array.from(allCampaignCountries);
 
       // Use date-filtered data if available, otherwise use all-time data
-      const dateRangeData = dateRangeSpendByLevel[campaign.campaign_id];
+      const dateRangeData = dateRangeSpendByCampaign[campaign.campaign_id];
       const campaignSpend = startDate && endDate 
         ? (dateRangeData?.spend || 0)
         : (campaign.spend_usd || 0);
