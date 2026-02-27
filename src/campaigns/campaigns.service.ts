@@ -254,14 +254,9 @@ export class CampaignsService {
           ? adSetCountries 
           : Array.from(allAdCountries);
 
-        // Use date-filtered data for ad set if available
-        const adSetDateData = dateRangeSpendByAdSet[adSet.adset_id];
-        const adSetSpend = startDate && endDate
-          ? (adSetDateData?.spend || 0)
-          : (adSet.spend_usd || 0);
-        const adSetLeads = startDate && endDate
-          ? (adSetDateData?.leads || 0)
-          : (adSet.insights_leads_count || 0);
+        // Ad Set spend = sum of all Ads' spend (hierarchical aggregation)
+        const adSetSpend = adsWithCountries.reduce((sum, ad) => sum + (ad.spendUsd || 0), 0);
+        const adSetLeads = adsWithCountries.reduce((sum, ad) => sum + (ad.leads || 0), 0);
 
         return {
           id: adSet.id,
@@ -284,14 +279,9 @@ export class CampaignsService {
       });
       const campaignCountries = Array.from(allCampaignCountries);
 
-      // Use date-filtered data if available, otherwise use all-time data
-      const dateRangeData = dateRangeSpendByCampaign[campaign.campaign_id];
-      const campaignSpend = startDate && endDate 
-        ? (dateRangeData?.spend || 0)
-        : (campaign.spend_usd || 0);
-      const campaignLeads = startDate && endDate
-        ? (dateRangeData?.leads || 0)
-        : (campaign.insights_leads_count || leadsCountByCampaign[campaign.campaign_id] || 0);
+      // Campaign spend = sum of all Ad Sets' spend (hierarchical aggregation)
+      const campaignSpend = adSetsWithCountries.reduce((sum, adSet) => sum + (adSet.spendUsd || 0), 0);
+      const campaignLeads = adSetsWithCountries.reduce((sum, adSet) => sum + (adSet.leads || 0), 0);
 
       return {
         id: campaign.id,

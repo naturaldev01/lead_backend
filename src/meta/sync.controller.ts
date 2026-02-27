@@ -668,15 +668,15 @@ export class SyncController {
           'ad',
         );
 
-        // Fetch and save daily insights for date filtering
-        this.logger.log(`Fetching daily insights for account ${account.name}`);
+        // Fetch and save daily insights for date filtering at AD level (includes campaign_id and adset_id)
+        this.logger.log(`Fetching daily insights at AD level for account ${account.name}`);
         const dailyInsights = await this.metaService.getDailyInsights(
           accountId,
           startDateStr,
           endDateStr,
-          'campaign',
+          'ad',
         );
-        this.logger.log(`Found ${dailyInsights.length} daily campaign insights`);
+        this.logger.log(`Found ${dailyInsights.length} daily ad-level insights`);
 
         if (dailyInsights.length > 0) {
           const dailyData = dailyInsights.map(insight => {
@@ -684,7 +684,8 @@ export class SyncController {
             return {
               date: insight.date_start,
               campaign_id: insight.campaign_id,
-              campaign_name: insight.campaign_name,
+              adset_id: insight.adset_id || '',
+              ad_id: insight.ad_id || '',
               spend_usd: parseFloat(insight.spend || '0'),
               leads_count: leadsCount,
               impressions: parseInt(insight.impressions || '0', 10),
