@@ -210,7 +210,15 @@ export class CampaignsService {
         }));
 
         const adSetCountries = parseCountriesFromName(adSet.name);
-        const hasAdCountries = adsWithCountries.some((ad: { countries: string[] }) => ad.countries.length > 0);
+        // Collect all unique countries from ads
+        const allAdCountries = new Set<string>();
+        adsWithCountries.forEach((ad: { countries: string[] }) => {
+          ad.countries.forEach(c => allAdCountries.add(c));
+        });
+        // AdSet shows its own countries + inherited from ads if adSet has none
+        const effectiveAdSetCountries = adSetCountries.length > 0 
+          ? adSetCountries 
+          : Array.from(allAdCountries);
 
         return {
           id: adSet.id,
@@ -220,16 +228,18 @@ export class CampaignsService {
           optimizationGoal: adSet.optimization_goal,
           spendUsd: adSet.spend_usd || 0,
           leads: adSet.insights_leads_count || 0,
-          countries: hasAdCountries ? [] : adSetCountries,
+          countries: effectiveAdSetCountries,
           ads: adsWithCountries,
         };
       });
 
-      const hasLowerLevelCountries = adSetsWithCountries.some(
-        (adSet: { countries: string[]; ads: { countries: string[] }[] }) => 
-          adSet.countries.length > 0 || adSet.ads.some((ad) => ad.countries.length > 0)
-      );
-      const campaignCountries = hasLowerLevelCountries ? [] : parseCountriesFromName(campaign.name);
+      // Collect all unique countries from campaign name and all adsets
+      const campaignParsedCountries = parseCountriesFromName(campaign.name);
+      const allCampaignCountries = new Set<string>(campaignParsedCountries);
+      adSetsWithCountries.forEach((adSet: { countries: string[] }) => {
+        adSet.countries.forEach(c => allCampaignCountries.add(c));
+      });
+      const campaignCountries = Array.from(allCampaignCountries);
 
       // Use date-filtered data if available, otherwise use all-time data
       const dateRangeData = dateRangeSpendByLevel[campaign.campaign_id];

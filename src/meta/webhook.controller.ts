@@ -3,6 +3,7 @@ import type { RawBodyRequest } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../common/supabase.service';
 import { MetaService } from './meta.service';
+import { FieldMappingsService } from '../field-mappings/field-mappings.service';
 import type { Request } from 'express';
 import * as crypto from 'crypto';
 
@@ -29,6 +30,7 @@ export class WebhookController {
     private configService: ConfigService,
     private supabaseService: SupabaseService,
     private metaService: MetaService,
+    private fieldMappingsService: FieldMappingsService,
   ) {}
 
   @Get()
@@ -151,9 +153,11 @@ export class WebhookController {
 
       if (fullLeadData?.field_data && insertedLead) {
         for (const field of fullLeadData.field_data) {
+          const mappedFieldName = await this.fieldMappingsService.getMappedFieldName(field.name);
           await supabase.from('lead_field_data').insert({
             lead_id: insertedLead.id,
             field_name: field.name,
+            mapped_field_name: mappedFieldName,
             field_value: field.values?.[0] || '',
           });
         }

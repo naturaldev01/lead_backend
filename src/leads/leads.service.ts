@@ -1,11 +1,15 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { SupabaseService } from '../common/supabase.service';
+import { FieldMappingsService } from '../field-mappings/field-mappings.service';
 
 @Injectable()
 export class LeadsService {
   private readonly logger = new Logger(LeadsService.name);
 
-  constructor(private supabaseService: SupabaseService) {}
+  constructor(
+    private supabaseService: SupabaseService,
+    private fieldMappingsService: FieldMappingsService,
+  ) {}
 
   async getLeads(
     startDate: string,
@@ -16,6 +20,7 @@ export class LeadsService {
     search?: string,
     page = 1,
     limit = 50,
+    includeFieldData = false,
   ) {
     const supabase = this.supabaseService.getClient();
     const offset = (page - 1) * limit;
@@ -55,8 +60,73 @@ export class LeadsService {
       throw error;
     }
 
+    const leads = data || [];
+
+    let fieldDataMap: Record<string, Array<{ name: string; mappedName: string | null; values: string[] }>> = {};
+
+    if (includeFieldData && leads.length > 0) {
+      const leadIds = leads.map((l) => l.id);
+      
+      // Batch lead IDs to avoid URL length limits (Supabase has ~16KB header limit)
+      // Each UUID is 36 chars, with encoding ~50 chars per ID. Safe batch size is ~100 IDs
+      const idBatchSize = 50;
+      let allFieldData: any[] = [];
+      
+      for (let i = 0; i < leadIds.length; i += idBatchSize) {
+        const batchIds = leadIds.slice(i, i + idBatchSize);
+        
+        // Fetch field data for this batch of lead IDs
+        let fdOffset = 0;
+        const rowBatchSize = 1000;
+        
+        while (true) {
+          const { data: fieldData, error: fdError } = await supabase
+            .from('lead_field_data')
+            .select('*')
+            .in('lead_id', batchIds)
+            .range(fdOffset, fdOffset + rowBatchSize - 1);
+          
+          if (fdError) {
+            this.logger.error('Failed to fetch field data', fdError);
+            break;
+          }
+          
+          if (!fieldData || fieldData.length === 0) break;
+          
+          allFieldData = allFieldData.concat(fieldData);
+          
+          if (fieldData.length < rowBatchSize) break;
+          fdOffset += rowBatchSize;
+        }
+      }
+      
+      this.logger.debug(`Fetched ${allFieldData.length} field data entries for ${leadIds.length} leads`);
+
+      for (const fd of allFieldData) {
+        if (!fieldDataMap[fd.lead_id]) {
+          fieldDataMap[fd.lead_id] = [];
+        }
+        // Apply mapping at runtime if not already mapped in DB
+        let mappedName = fd.mapped_field_name;
+        if (!mappedName) {
+          mappedName = await this.fieldMappingsService.getMappedFieldName(fd.field_name);
+        }
+        fieldDataMap[fd.lead_id].push({
+          name: fd.field_name,
+          mappedName: mappedName || null,
+          values: [fd.field_value],
+        });
+      }
+      
+      // Log leads without field data for debugging
+      const leadsWithoutData = leadIds.filter(id => !fieldDataMap[id] || fieldDataMap[id].length === 0);
+      if (leadsWithoutData.length > 0) {
+        this.logger.debug(`Leads without field data: ${leadsWithoutData.length}`);
+      }
+    }
+
     return {
-      data: (data || []).map((lead) => ({
+      data: leads.map((lead) => ({
         id: lead.id,
         leadId: lead.lead_id,
         createdAt: lead.created_at,
@@ -67,6 +137,7 @@ export class LeadsService {
         adName: lead.ad_name || '',
         formName: lead.form_name || '',
         source: lead.source || '',
+        ...(includeFieldData && { fieldData: fieldDataMap[lead.id] || [] }),
       })),
       total: count || 0,
       page,
@@ -96,6 +167,21 @@ export class LeadsService {
       .select('*')
       .eq('lead_id', id);
 
+    // Apply mapping at runtime for fields without mapped_field_name
+    const mappedFieldData = await Promise.all(
+      (fieldData || []).map(async (f) => {
+        let mappedName = f.mapped_field_name;
+        if (!mappedName) {
+          mappedName = await this.fieldMappingsService.getMappedFieldName(f.field_name);
+        }
+        return {
+          name: f.field_name,
+          mappedName: mappedName || null,
+          values: [f.field_value],
+        };
+      })
+    );
+
     return {
       id: lead.id,
       leadId: lead.lead_id,
@@ -107,10 +193,7 @@ export class LeadsService {
       adName: lead.ad_name || '',
       formName: lead.form_name || '',
       source: lead.source || '',
-      fieldData: (fieldData || []).map((f) => ({
-        name: f.field_name,
-        values: [f.field_value],
-      })),
+      fieldData: mappedFieldData,
     };
   }
 

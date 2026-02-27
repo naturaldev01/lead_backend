@@ -8,6 +8,7 @@ import { SubscriptionsModule } from './subscriptions/subscriptions.module';
 import { MappingsModule } from './mappings/mappings.module';
 import { AdAccountsModule } from './ad-accounts/ad-accounts.module';
 import { MetaModule } from './meta/meta.module';
+import { FieldMappingsModule } from './field-mappings/field-mappings.module';
 import { AppController } from './app.controller';
 
 @Module({
@@ -23,6 +24,7 @@ import { AppController } from './app.controller';
     MappingsModule,
     AdAccountsModule,
     MetaModule,
+    FieldMappingsModule,
   ],
   controllers: [AppController],
 })

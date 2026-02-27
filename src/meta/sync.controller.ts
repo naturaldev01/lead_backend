@@ -1,6 +1,7 @@
 import { Controller, Post, Get, Query, Logger } from '@nestjs/common';
 import { MetaService } from './meta.service';
 import { SupabaseService } from '../common/supabase.service';
+import { FieldMappingsService } from '../field-mappings/field-mappings.service';
 
 interface SyncProgress {
   status: 'idle' | 'running' | 'completed' | 'error';
@@ -144,6 +145,7 @@ export class SyncController {
   constructor(
     private metaService: MetaService,
     private supabaseService: SupabaseService,
+    private fieldMappingsService: FieldMappingsService,
   ) {}
 
   @Get('sync/progress')
@@ -330,15 +332,17 @@ export class SyncController {
           if (!insertError && insertedLeads) {
             totalInserted += insertedLeads.length;
 
-            // Field data insert
+            // Field data insert with mapping
             const fieldDataToInsert: any[] = [];
             for (let j = 0; j < insertedLeads.length; j++) {
               const originalLead = newLeads[j];
               if (originalLead.field_data) {
                 for (const field of originalLead.field_data) {
+                  const mappedFieldName = await this.fieldMappingsService.getMappedFieldName(field.name);
                   fieldDataToInsert.push({
                     lead_id: insertedLeads[j].id,
                     field_name: field.name,
+                    mapped_field_name: mappedFieldName,
                     field_value: field.values?.[0] || '',
                   });
                 }
@@ -463,9 +467,11 @@ export class SyncController {
                   const originalLead = newLeads[j];
                   if (originalLead.field_data) {
                     for (const field of originalLead.field_data) {
+                      const mappedFieldName = await this.fieldMappingsService.getMappedFieldName(field.name);
                       fieldDataToInsert.push({
                         lead_id: insertedLeads[j].id,
                         field_name: field.name,
+                        mapped_field_name: mappedFieldName,
                         field_value: field.values?.[0] || '',
                       });
                     }

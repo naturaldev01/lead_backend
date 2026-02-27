@@ -15,6 +15,7 @@ export class LeadsController {
     @Query('search') search?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('includeFieldData') includeFieldData?: string,
   ) {
     return this.leadsService.getLeads(
       startDate,
@@ -25,6 +26,7 @@ export class LeadsController {
       search,
       parseInt(page || '1', 10),
       parseInt(limit || '50', 10),
+      includeFieldData === 'true',
     );
   }
 
