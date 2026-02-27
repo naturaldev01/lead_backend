@@ -221,16 +221,43 @@ export class CampaignsService {
     }, {});
 
     const allCampaigns = campaigns.map((campaign) => {
+      // Get campaign's date-filtered spend (from daily_insights) for proportional distribution
+      const campaignDateData = dateRangeSpendByCampaign[campaign.campaign_id];
+      const campaignDateSpend = startDate && endDate ? (campaignDateData?.spend || 0) : 0;
+      const campaignDateLeads = startDate && endDate ? (campaignDateData?.leads || 0) : 0;
+      
+      // Calculate campaign's all-time total spend from ads for ratio calculation
+      const campaignAllTimeSpend = campaign.spend_usd || 0;
+
       const adSetsWithCountries = (adSetsGroupedByCampaign[campaign.campaign_id] || []).map((adSet) => {
         const adsWithCountries = (adSet.ads || []).map((ad: { id: string; ad_id: string; name: string; status: string; spend_usd: number; insights_leads_count?: number }) => {
-          // Use date-filtered data for ad if available
-          const adDateData = dateRangeSpendByAd[ad.ad_id];
-          const adSpend = startDate && endDate
-            ? (adDateData?.spend || 0)
-            : (ad.spend_usd || 0);
-          const adLeads = startDate && endDate
-            ? (adDateData?.leads || 0)
-            : (ad.insights_leads_count || 0);
+          const adAllTimeSpend = ad.spend_usd || 0;
+          const adAllTimeLeads = ad.insights_leads_count || 0;
+          
+          let adSpend: number;
+          let adLeads: number;
+          
+          if (startDate && endDate) {
+            // For date filtering: distribute campaign's date-filtered spend proportionally based on all-time ratios
+            const adDateData = dateRangeSpendByAd[ad.ad_id];
+            if (adDateData && adDateData.spend > 0) {
+              // If we have ad-level daily data, use it directly
+              adSpend = adDateData.spend;
+              adLeads = adDateData.leads;
+            } else if (campaignAllTimeSpend > 0 && campaignDateSpend > 0) {
+              // Proportional distribution based on all-time spend ratio
+              const ratio = adAllTimeSpend / campaignAllTimeSpend;
+              adSpend = campaignDateSpend * ratio;
+              adLeads = Math.round(campaignDateLeads * ratio);
+            } else {
+              adSpend = 0;
+              adLeads = 0;
+            }
+          } else {
+            // No date filter: use all-time values
+            adSpend = adAllTimeSpend;
+            adLeads = adAllTimeLeads;
+          }
           
           return {
             id: ad.id,
