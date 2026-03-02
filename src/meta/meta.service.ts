@@ -214,58 +214,60 @@ export class MetaService {
       ad: 'campaign_id,adset_id,ad_id,ad_name,spend,actions,impressions,clicks,date_start',
     };
 
-    // Split date range into 90-day batches to avoid Meta API limits
-    const batches = this.splitDateRange(startDate, endDate, 90);
-    this.logger.log(`Splitting ${startDate} to ${endDate} into ${batches.length} batches for daily insights`);
+    // Split date range into 15-day batches for more reliable API calls
+    const batches = this.splitDateRange(startDate, endDate, 15);
+    this.logger.log(`Splitting ${startDate} to ${endDate} into ${batches.length} batches (15-day each) for daily insights`);
 
     for (let i = 0; i < batches.length; i++) {
       const batch = batches[i];
       
-      // Add delay between batches to avoid rate limiting (2 seconds)
+      // Add delay between batches to avoid rate limiting (3 seconds)
       if (i > 0) {
-        await this.sleep(2000);
+        await this.sleep(3000);
       }
       
       let retries = 0;
-      const maxRetries = 3;
+      const maxRetries = 5;
+      let batchInsights: any[] = [];
       
       while (retries < maxRetries) {
         try {
-          let nextUrl: string | null = `${this.baseUrl}/act_${adAccountId}/insights?access_token=${this.accessToken}&level=${level}&fields=${fieldsMap[level]}&time_range=${JSON.stringify({ since: batch.start, until: batch.end })}&time_increment=1&limit=500`;
+          batchInsights = [];
+          let nextUrl: string | null = `${this.baseUrl}/act_${adAccountId}/insights?access_token=${this.accessToken}&level=${level}&fields=${fieldsMap[level]}&time_range=${JSON.stringify({ since: batch.start, until: batch.end })}&time_increment=1&limit=200`;
           
           while (nextUrl) {
-            const response = await axios.get(nextUrl);
+            const response = await axios.get(nextUrl, { timeout: 180000 });
             const data = response.data.data || [];
-            allInsights.push(...data);
+            batchInsights.push(...data);
             nextUrl = response.data.paging?.next || null;
             
             // Small delay between pages
             if (nextUrl) {
-              await this.sleep(500);
-            }
-            
-            if (allInsights.length >= 100000) {
-              this.logger.warn(`Reached 100000 daily insights limit for account ${adAccountId} at level ${level}`);
-              break;
+              await this.sleep(1000);
             }
           }
-          this.logger.log(`Batch ${i + 1}/${batches.length} (${batch.start} to ${batch.end}): fetched ${allInsights.length} total daily ${level} insights`);
+          
+          allInsights.push(...batchInsights);
+          this.logger.log(`Batch ${i + 1}/${batches.length} (${batch.start} to ${batch.end}): fetched ${batchInsights.length} insights (total: ${allInsights.length})`);
           break; // Success, exit retry loop
         } catch (error: any) {
           retries++;
           const errorCode = error.response?.data?.error?.code;
+          const statusCode = error.response?.status;
+          const errorMsg = error.message || '';
           const isRateLimit = errorCode === 4 || errorCode === 17;
+          const isServerError = statusCode >= 500 || error.code === 'ETIMEDOUT' || error.code === 'ECONNRESET';
+          const isTimeout = errorMsg.includes('timeout') || error.code === 'ECONNABORTED';
           
-          if (isRateLimit && retries < maxRetries) {
-            const waitTime = Math.pow(2, retries) * 30000; // Exponential backoff: 60s, 120s, 240s
-            this.logger.warn(`Rate limit hit for batch ${batch.start} to ${batch.end}. Waiting ${waitTime / 1000}s before retry ${retries}/${maxRetries}`);
+          if ((isRateLimit || isServerError || isTimeout) && retries < maxRetries) {
+            const waitTime = Math.pow(2, retries) * 15000; // Exponential backoff: 30s, 60s, 120s, 240s
+            this.logger.warn(`Retriable error for batch ${batch.start} to ${batch.end} (${errorMsg}). Waiting ${waitTime / 1000}s before retry ${retries}/${maxRetries}`);
             await this.sleep(waitTime);
           } else if (retries >= maxRetries) {
-            this.logger.error(`Failed batch ${batch.start} to ${batch.end} after ${maxRetries} retries: ${error.message}`);
-            // Continue with next batch instead of failing completely
+            this.logger.error(`Failed batch ${batch.start} to ${batch.end} after ${maxRetries} retries: ${errorMsg}`);
             break;
           } else {
-            this.logger.error(`Non-rate-limit error for batch ${batch.start} to ${batch.end}: ${error.message}`);
+            this.logger.error(`Non-retriable error for batch ${batch.start} to ${batch.end}: ${errorMsg}`);
             break;
           }
         }

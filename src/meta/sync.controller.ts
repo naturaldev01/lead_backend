@@ -679,13 +679,17 @@ export class SyncController {
         this.logger.log(`Found ${dailyInsights.length} daily ad-level insights`);
 
         if (dailyInsights.length > 0) {
-          const dailyData = dailyInsights.map(insight => {
+          // Filter out insights without ad_id (invalid data that causes duplicates)
+          const validInsights = dailyInsights.filter(insight => insight.ad_id && insight.ad_id.trim() !== '');
+          this.logger.log(`Filtered ${dailyInsights.length - validInsights.length} insights without ad_id`);
+
+          const dailyData = validInsights.map(insight => {
             const leadsCount = this.extractLeadsCount(insight.actions || []);
             return {
               date: insight.date_start,
               campaign_id: insight.campaign_id,
               adset_id: insight.adset_id || '',
-              ad_id: insight.ad_id || '',
+              ad_id: insight.ad_id,
               spend_usd: parseFloat(insight.spend || '0'),
               leads_count: leadsCount,
               impressions: parseInt(insight.impressions || '0', 10),
@@ -694,26 +698,20 @@ export class SyncController {
             };
           });
 
-          await this.executeSupabaseWriteWithRetry(
-            `Failed to clear daily insights for account ${accountId}`,
-            () =>
-              supabase
-                .from('daily_insights')
-                .delete()
-                .eq('ad_account_id', accountId)
-                .gte('date', startDateStr)
-                .lte('date', endDateStr),
-          );
-
-          // Batch insert daily insights in chunks
-          for (let i = 0; i < dailyData.length; i += 500) {
-            const chunk = dailyData.slice(i, i + 500);
-            await this.executeSupabaseWriteWithRetry(
-              `Failed to insert daily insights for account ${accountId}`,
-              () => supabase.from('daily_insights').insert(chunk),
-            );
+          if (dailyData.length > 0) {
+            // Use upsert to avoid duplicates (requires unique constraint on date, ad_id, ad_account_id)
+            for (let i = 0; i < dailyData.length; i += 500) {
+              const chunk = dailyData.slice(i, i + 500);
+              await this.executeSupabaseWriteWithRetry(
+                `Failed to upsert daily insights for account ${accountId}`,
+                () => supabase.from('daily_insights').upsert(chunk, { 
+                  onConflict: 'date,ad_id,ad_account_id',
+                  ignoreDuplicates: false 
+                }),
+              );
+            }
+            this.logger.log(`Saved ${dailyData.length} daily insights for account ${account.name}`);
           }
-          this.logger.log(`Saved ${dailyData.length} daily insights for account ${account.name}`);
         }
       }
 
