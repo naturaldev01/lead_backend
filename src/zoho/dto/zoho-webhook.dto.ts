@@ -2,7 +2,7 @@ import { IsString, IsOptional, IsNumber } from 'class-validator';
 
 export class ZohoWebhookDto {
   @IsString()
-  event: string;
+  event_name: string;
 
   @IsString()
   phone: string;

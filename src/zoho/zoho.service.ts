@@ -26,14 +26,14 @@ export class ZohoService {
     const supabase = this.supabaseService.getClient();
     const normalizedPhone = this.phoneLookupService.normalizePhone(payload.phone);
 
-    this.logger.log(`Processing Zoho event: ${payload.event} for phone: ${payload.phone}`);
+    this.logger.log(`Processing Zoho event: ${payload.event_name} for phone: ${payload.phone}`);
 
     // Find matching lead
     const matchedLead = await this.phoneLookupService.findLeadByPhone(payload.phone);
 
     // Save the event
     const eventRecord: ZohoEventRecord = {
-      event_type: payload.event,
+      event_type: payload.event_name,
       phone_raw: payload.phone,
       phone_normalized: normalizedPhone,
       amount: payload.amount,
@@ -59,7 +59,7 @@ export class ZohoService {
       await this.updateLeadAttribution(
         matchedLead,
         normalizedPhone,
-        payload.event,
+        payload.event_name,
         payload.amount,
       );
 

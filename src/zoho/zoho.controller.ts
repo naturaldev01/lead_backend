@@ -21,7 +21,7 @@ export class ZohoController {
   @Post('webhook')
   @HttpCode(HttpStatus.OK)
   async handleWebhook(@Body() payload: ZohoWebhookDto) {
-    this.logger.log(`Received Zoho webhook: ${payload.event}`);
+    this.logger.log(`Received Zoho webhook: ${payload.event_name}`);
 
     try {
       const result = await this.zohoService.processWebhookEvent(payload);

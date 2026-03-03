@@ -238,18 +238,14 @@ export class CampaignsService {
           let adLeads: number;
           
           if (startDate && endDate) {
-            // For date filtering: distribute campaign's date-filtered spend proportionally based on all-time ratios
+            // For date filtering: use daily_insights data only - no proportional distribution
+            // If ad-level data doesn't exist for this date range, it means the ad had no activity
             const adDateData = dateRangeSpendByAd[ad.ad_id];
-            if (adDateData && adDateData.spend > 0) {
-              // If we have ad-level daily data, use it directly
+            if (adDateData) {
               adSpend = adDateData.spend;
               adLeads = adDateData.leads;
-            } else if (campaignAllTimeSpend > 0 && campaignDateSpend > 0) {
-              // Proportional distribution based on all-time spend ratio
-              const ratio = adAllTimeSpend / campaignAllTimeSpend;
-              adSpend = campaignDateSpend * ratio;
-              adLeads = Math.round(campaignDateLeads * ratio);
             } else {
+              // No data for this ad in the date range = no spend/leads
               adSpend = 0;
               adLeads = 0;
             }
@@ -306,9 +302,20 @@ export class CampaignsService {
       });
       const campaignCountries = Array.from(allCampaignCountries);
 
-      // Campaign spend = sum of all Ad Sets' spend (hierarchical aggregation)
-      const campaignSpend = adSetsWithCountries.reduce((sum, adSet) => sum + (adSet.spendUsd || 0), 0);
-      const campaignLeads = adSetsWithCountries.reduce((sum, adSet) => sum + (adSet.leads || 0), 0);
+      // Campaign spend: use daily_insights aggregated data directly for date-filtered queries
+      // This ensures accurate totals even when ad-level data is incomplete
+      let campaignSpend: number;
+      let campaignLeads: number;
+      
+      if (startDate && endDate) {
+        // Use pre-aggregated campaign totals from daily_insights
+        campaignSpend = campaignDateSpend;
+        campaignLeads = campaignDateLeads;
+      } else {
+        // All-time: use hierarchical aggregation from ads
+        campaignSpend = adSetsWithCountries.reduce((sum, adSet) => sum + (adSet.spendUsd || 0), 0);
+        campaignLeads = adSetsWithCountries.reduce((sum, adSet) => sum + (adSet.leads || 0), 0);
+      }
 
       return {
         id: campaign.id,
