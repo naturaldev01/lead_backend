@@ -64,6 +64,21 @@ export class ZohoController {
     return this.zohoService.getFunnelStats(startDate, endDate);
   }
 
+  @Get('attributions')
+  async getAttributionList(
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.zohoService.getAttributionList(
+      startDate,
+      endDate,
+      page ? parseInt(page, 10) : 1,
+      limit ? parseInt(limit, 10) : 25,
+    );
+  }
+
   @Get('cost/:phone')
   async getCostByPhone(@Param('phone') phone: string) {
     const result = await this.zohoService.lookupByPhone(decodeURIComponent(phone));

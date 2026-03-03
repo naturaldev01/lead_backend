@@ -421,4 +421,101 @@ export class ZohoService {
       totalSpend,
     };
   }
+
+  async getAttributionList(
+    startDate?: string,
+    endDate?: string,
+    page: number = 1,
+    limit: number = 25,
+  ): Promise<{
+    data: any[];
+    total: number;
+    page: number;
+    limit: number;
+    totalPages: number;
+  }> {
+    const supabase = this.supabaseService.getClient();
+    const offset = (page - 1) * limit;
+
+    let query = supabase
+      .from('lead_attribution')
+      .select(`
+        *,
+        leads (
+          lead_id,
+          form_name,
+          ad_name,
+          ad_set_name,
+          campaign_id,
+          created_at
+        )
+      `, { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (startDate) {
+      query = query.gte('lead_date', startDate);
+    }
+    if (endDate) {
+      query = query.lte('lead_date', endDate);
+    }
+
+    const { data, error, count } = await query;
+
+    if (error) {
+      this.logger.error('Failed to fetch attribution list', error);
+      return { data: [], total: 0, page, limit, totalPages: 0 };
+    }
+
+    // Get campaign names for each attribution
+    const campaignIds = [...new Set((data || []).map(d => d.campaign_id).filter(Boolean))];
+    let campaignMap: Record<string, string> = {};
+
+    if (campaignIds.length > 0) {
+      const { data: campaigns } = await supabase
+        .from('campaigns')
+        .select('campaign_id, name')
+        .in('campaign_id', campaignIds);
+
+      if (campaigns) {
+        campaignMap = campaigns.reduce((acc, c) => {
+          acc[c.campaign_id] = c.name;
+          return acc;
+        }, {} as Record<string, string>);
+      }
+    }
+
+    const formattedData = (data || []).map(attr => ({
+      id: attr.id,
+      phone: attr.phone_normalized,
+      leadId: attr.leads?.lead_id,
+      leadDate: attr.lead_date,
+      campaignName: campaignMap[attr.campaign_id] || 'Unknown',
+      campaignId: attr.campaign_id,
+      adName: attr.leads?.ad_name,
+      adSetName: attr.leads?.ad_set_name,
+      formName: attr.leads?.form_name,
+      funnelStage: attr.funnel_stage,
+      attributedSpend: parseFloat(attr.attributed_spend_usd) || 0,
+      dealAmount: attr.deal_amount ? parseFloat(attr.deal_amount) : null,
+      paymentAmount: attr.payment_amount ? parseFloat(attr.payment_amount) : null,
+      roas: attr.roas ? parseFloat(attr.roas) : null,
+      contactDate: attr.contact_date,
+      offerDate: attr.offer_date,
+      dealDate: attr.deal_date,
+      paymentDate: attr.payment_date,
+      createdAt: attr.created_at,
+    }));
+
+    const total = count || 0;
+    const totalPages = Math.ceil(total / limit);
+
+    return {
+      data: formattedData,
+      total,
+      page,
+      limit,
+      totalPages,
+    };
+  }
 }
