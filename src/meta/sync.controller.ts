@@ -741,4 +741,122 @@ export class SyncController {
   async syncLeads() {
     return this.syncLeadsStreaming();
   }
+
+  @Post('sync/date-range')
+  async syncDateRange(
+    @Query('startDate') startDate: string,
+    @Query('endDate') endDate: string,
+    @Query('accountId') accountId?: string,
+  ) {
+    if (!startDate || !endDate) {
+      return { success: false, error: 'startDate and endDate are required (format: YYYY-MM-DD)' };
+    }
+
+    const supabase = this.supabaseService.getClient();
+    const results: { account: string; fetched: number; saved: number; errors: string[] }[] = [];
+
+    try {
+      const rawAdAccounts = await this.metaService.getAdAccounts();
+      const allowedAccounts = this.metaService.getAllowedAdAccounts();
+      const allowedSet = new Set(
+        (allowedAccounts || [])
+          .map((id) => this.normalizeAccountId(id))
+          .filter(Boolean),
+      );
+
+      let adAccounts =
+        allowedSet.size > 0
+          ? rawAdAccounts.filter((account) =>
+              allowedSet.has(this.normalizeAccountId(account.account_id || account.id)),
+            )
+          : rawAdAccounts;
+
+      // Filter by specific accountId if provided
+      if (accountId) {
+        const targetAccountId = this.normalizeAccountId(accountId);
+        adAccounts = adAccounts.filter(
+          (account) => this.normalizeAccountId(account.account_id || account.id) === targetAccountId,
+        );
+      }
+
+      this.logger.log(`Syncing date range ${startDate} to ${endDate} for ${adAccounts.length} account(s)`);
+
+      for (const account of adAccounts) {
+        const acctId = this.normalizeAccountId(account.account_id || account.id);
+        const accountErrors: string[] = [];
+
+        this.logger.log(`Fetching daily insights for account ${account.name} (${acctId})`);
+
+        // Use smaller 7-day batches for targeted sync
+        const dailyInsights = await this.metaService.getDailyInsightsSmallBatch(
+          acctId,
+          startDate,
+          endDate,
+          'ad',
+        );
+
+        this.logger.log(`Fetched ${dailyInsights.length} daily insights for ${account.name}`);
+
+        if (dailyInsights.length > 0) {
+          const validInsights = dailyInsights.filter(insight => insight.ad_id && insight.ad_id.trim() !== '');
+
+          const dailyData = validInsights.map(insight => {
+            const leadsCount = this.extractLeadsCount(insight.actions || []);
+            return {
+              date: insight.date_start,
+              campaign_id: insight.campaign_id,
+              adset_id: insight.adset_id || '',
+              ad_id: insight.ad_id,
+              spend_usd: parseFloat(insight.spend || '0'),
+              leads_count: leadsCount,
+              impressions: parseInt(insight.impressions || '0', 10),
+              clicks: parseInt(insight.clicks || '0', 10),
+              ad_account_id: acctId,
+            };
+          });
+
+          if (dailyData.length > 0) {
+            for (let i = 0; i < dailyData.length; i += 500) {
+              const chunk = dailyData.slice(i, i + 500);
+              try {
+                await this.executeSupabaseWriteWithRetry(
+                  `Failed to upsert daily insights for account ${acctId}`,
+                  () => supabase.from('daily_insights').upsert(chunk, {
+                    onConflict: 'date,ad_id,ad_account_id',
+                    ignoreDuplicates: false,
+                  }),
+                );
+              } catch (err) {
+                accountErrors.push((err as Error).message);
+              }
+            }
+            this.logger.log(`Saved ${dailyData.length} daily insights for account ${account.name}`);
+          }
+
+          results.push({
+            account: account.name,
+            fetched: dailyInsights.length,
+            saved: dailyData.length,
+            errors: accountErrors,
+          });
+        } else {
+          results.push({
+            account: account.name,
+            fetched: 0,
+            saved: 0,
+            errors: accountErrors,
+          });
+        }
+      }
+
+      return {
+        success: true,
+        dateRange: { startDate, endDate },
+        results,
+      };
+    } catch (error) {
+      this.logger.error('Date range sync failed', error);
+      return { success: false, error: (error as Error).message };
+    }
+  }
 }

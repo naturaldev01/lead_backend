@@ -282,6 +282,75 @@ export class MetaService {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
+  async getDailyInsightsSmallBatch(
+    adAccountId: string,
+    startDate: string,
+    endDate: string,
+    level: 'campaign' | 'adset' | 'ad' = 'ad',
+  ): Promise<any[]> {
+    const allInsights: any[] = [];
+    const fieldsMap = {
+      campaign: 'campaign_id,campaign_name,spend,actions,impressions,clicks,date_start',
+      adset: 'campaign_id,adset_id,adset_name,spend,actions,impressions,clicks,date_start',
+      ad: 'campaign_id,adset_id,ad_id,ad_name,spend,actions,impressions,clicks,date_start',
+    };
+
+    // Use 7-day batches for more reliable API calls on problematic date ranges
+    const batches = this.splitDateRange(startDate, endDate, 7);
+    this.logger.log(`Small batch sync: ${startDate} to ${endDate} into ${batches.length} batches (7-day each)`);
+
+    for (let i = 0; i < batches.length; i++) {
+      const batch = batches[i];
+
+      if (i > 0) {
+        await this.sleep(5000); // 5 second delay between batches
+      }
+
+      let retries = 0;
+      const maxRetries = 5;
+      let batchInsights: any[] = [];
+
+      while (retries < maxRetries) {
+        try {
+          batchInsights = [];
+          let nextUrl: string | null = `${this.baseUrl}/act_${adAccountId}/insights?access_token=${this.accessToken}&level=${level}&fields=${fieldsMap[level]}&time_range=${JSON.stringify({ since: batch.start, until: batch.end })}&time_increment=1&limit=100`;
+
+          while (nextUrl) {
+            const response = await axios.get(nextUrl, { timeout: 120000 });
+            const data = response.data.data || [];
+            batchInsights.push(...data);
+            nextUrl = response.data.paging?.next || null;
+
+            if (nextUrl) {
+              await this.sleep(1500);
+            }
+          }
+
+          allInsights.push(...batchInsights);
+          this.logger.log(`Small batch ${i + 1}/${batches.length} (${batch.start} to ${batch.end}): fetched ${batchInsights.length} insights`);
+          break;
+        } catch (error: any) {
+          retries++;
+          const errorMsg = error.message || '';
+          const statusCode = error.response?.status;
+          const isRetriable = statusCode >= 500 || statusCode === 400 || errorMsg.includes('timeout') || error.code === 'ETIMEDOUT' || error.code === 'ECONNRESET' || error.code === 'ECONNABORTED';
+
+          if (isRetriable && retries < maxRetries) {
+            const waitTime = Math.pow(2, retries) * 20000; // 40s, 80s, 160s, 320s
+            this.logger.warn(`Retry ${retries}/${maxRetries} for batch ${batch.start} to ${batch.end} (${errorMsg}). Waiting ${waitTime / 1000}s`);
+            await this.sleep(waitTime);
+          } else {
+            this.logger.error(`Failed batch ${batch.start} to ${batch.end} after ${retries} retries: ${errorMsg}`);
+            break;
+          }
+        }
+      }
+    }
+
+    this.logger.log(`Small batch sync complete: ${allInsights.length} total insights for account ${adAccountId}`);
+    return allInsights;
+  }
+
   private splitDateRange(startDate: string, endDate: string, batchDays: number): { start: string; end: string }[] {
     const batches: { start: string; end: string }[] = [];
     const start = new Date(startDate);
