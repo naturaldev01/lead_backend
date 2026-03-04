@@ -20,22 +20,39 @@ export class ZohoService {
   async processWebhookEvent(payload: ZohoWebhookDto): Promise<{
     success: boolean;
     matched: boolean;
+    matchedBy?: 'phone' | 'email';
     leadId?: string;
     message: string;
+    searchedBy?: { phone?: string; email?: string };
   }> {
     const supabase = this.supabaseService.getClient();
-    const normalizedPhone = this.phoneLookupService.normalizePhone(payload.phone);
 
-    this.logger.log(`Processing Zoho event: ${payload.event_name} for phone: ${payload.phone}`);
+    // Check if at least phone or email is provided
+    if (!payload.phone && !payload.email) {
+      this.logger.warn(`Zoho webhook received without phone or email: ${payload.event_name}`);
+      return {
+        success: false,
+        matched: false,
+        message: 'No phone or email provided - cannot search for matching lead',
+      };
+    }
 
-    // Find matching lead
-    const matchedLead = await this.phoneLookupService.findLeadByPhone(payload.phone);
+    const normalizedPhone = payload.phone ? this.phoneLookupService.normalizePhone(payload.phone) : undefined;
+    const normalizedEmail = payload.email ? this.phoneLookupService.normalizeEmail(payload.email) : undefined;
+
+    this.logger.log(`Processing Zoho event: ${payload.event_name} for phone: ${payload.phone || 'N/A'}, email: ${payload.email || 'N/A'}`);
+
+    // Find matching lead by phone first, then email
+    const matchedLead = await this.phoneLookupService.findLeadByPhoneOrEmail(payload.phone, payload.email);
+    const matchedBy = matchedLead ? (payload.phone && await this.phoneLookupService.findLeadByPhone(payload.phone) ? 'phone' : 'email') : undefined;
 
     // Save the event
     const eventRecord: ZohoEventRecord = {
       event_type: payload.event_name,
       phone_raw: payload.phone,
       phone_normalized: normalizedPhone,
+      email_raw: payload.email,
+      email_normalized: normalizedEmail,
       amount: payload.amount,
       zoho_record_id: payload.zoho_id,
       matched_lead_id: matchedLead?.leadDbId,
@@ -58,7 +75,7 @@ export class ZohoService {
     if (matchedLead) {
       await this.updateLeadAttribution(
         matchedLead,
-        normalizedPhone,
+        normalizedPhone || normalizedEmail || '',
         payload.event_name,
         payload.amount,
       );
@@ -66,15 +83,21 @@ export class ZohoService {
       return {
         success: true,
         matched: true,
+        matchedBy,
         leadId: matchedLead.leadDbId,
-        message: `Event processed and matched to lead ${matchedLead.leadId}`,
+        message: `Event processed and matched to lead ${matchedLead.leadId} by ${matchedBy}`,
       };
     }
 
+    // No matching lead found - return detailed info for Zoho
     return {
       success: true,
       matched: false,
-      message: 'Event saved but no matching lead found',
+      message: 'No matching lead found in Meta ads data pool. This contact may not have originated from a Meta ad campaign.',
+      searchedBy: {
+        ...(payload.phone && { phone: payload.phone }),
+        ...(payload.email && { email: payload.email }),
+      },
     };
   }
 

@@ -4,8 +4,13 @@ export class ZohoWebhookDto {
   @IsString()
   event_name: string;
 
+  @IsOptional()
   @IsString()
-  phone: string;
+  phone?: string;
+
+  @IsOptional()
+  @IsString()
+  email?: string;
 
   @IsOptional()
   @IsString()
@@ -56,8 +61,10 @@ export interface LeadLookupResult {
 export interface ZohoEventRecord {
   id?: string;
   event_type: string;
-  phone_raw: string;
-  phone_normalized: string;
+  phone_raw?: string;
+  phone_normalized?: string;
+  email_raw?: string;
+  email_normalized?: string;
   amount?: number;
   zoho_record_id?: string;
   matched_lead_id?: string;

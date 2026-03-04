@@ -155,4 +155,98 @@ export class PhoneLookupService {
 
     return results;
   }
+
+  normalizeEmail(email: string): string {
+    if (!email) return '';
+    return email.trim().toLowerCase();
+  }
+
+  async findLeadByEmail(email: string): Promise<MatchedLead | null> {
+    const supabase = this.supabaseService.getClient();
+    const normalized = this.normalizeEmail(email);
+
+    if (!normalized) return null;
+
+    this.logger.debug(`Searching for email: ${email}, normalized: ${normalized}`);
+
+    // Search in lead_field_data for email fields
+    const { data: fieldMatches, error: fieldError } = await supabase
+      .from('lead_field_data')
+      .select('lead_id')
+      .or(`mapped_field_name.eq.email,field_name.ilike.%email%,field_name.ilike.%mail%`)
+      .ilike('field_value', normalized);
+
+    if (fieldError) {
+      this.logger.error('Error searching lead_field_data for email', fieldError);
+      return null;
+    }
+
+    if (!fieldMatches || fieldMatches.length === 0) {
+      this.logger.debug('No matching leads found for email');
+      return null;
+    }
+
+    const leadIds = [...new Set(fieldMatches.map(f => f.lead_id))];
+    this.logger.debug(`Found ${leadIds.length} potential lead matches for email`);
+
+    // Get lead details
+    const { data: leads, error: leadError } = await supabase
+      .from('leads')
+      .select(`
+        id,
+        lead_id,
+        campaign_id,
+        ad_name,
+        ad_set_name,
+        form_name,
+        created_at,
+        campaigns (id, name)
+      `)
+      .in('id', leadIds)
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    if (leadError || !leads || leads.length === 0) {
+      this.logger.debug('Could not fetch lead details for email');
+      return null;
+    }
+
+    const lead = leads[0] as any;
+
+    return {
+      leadId: lead.lead_id,
+      leadDbId: lead.id,
+      campaignId: lead.campaign_id || '',
+      adId: '',
+      adSetId: '',
+      adName: lead.ad_name || '',
+      adSetName: lead.ad_set_name || '',
+      campaignName: lead.campaigns?.name || '',
+      formName: lead.form_name || '',
+      createdAt: lead.created_at,
+    };
+  }
+
+  async findLeadByPhoneOrEmail(phone?: string, email?: string): Promise<MatchedLead | null> {
+    // Try phone first
+    if (phone) {
+      const phoneMatch = await this.findLeadByPhone(phone);
+      if (phoneMatch) {
+        this.logger.debug(`Found lead by phone: ${phone}`);
+        return phoneMatch;
+      }
+    }
+
+    // If phone didn't match, try email
+    if (email) {
+      const emailMatch = await this.findLeadByEmail(email);
+      if (emailMatch) {
+        this.logger.debug(`Found lead by email: ${email}`);
+        return emailMatch;
+      }
+    }
+
+    this.logger.debug('No matching lead found by phone or email');
+    return null;
+  }
 }
