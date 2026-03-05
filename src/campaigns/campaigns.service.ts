@@ -126,49 +126,70 @@ export class CampaignsService {
     let dateRangeSpendByAd: Record<string, { spend: number; leads: number }> = {};
     
     if (startDate && endDate) {
-      let insightsQuery = supabase
-        .from('daily_insights')
-        .select('campaign_id, adset_id, ad_id, spend_usd, leads_count')
-        .gte('date', startDate)
-        .lte('date', endDate);
-      
-      if (accountId) {
-        insightsQuery = insightsQuery.eq('ad_account_id', accountId);
+      // Fetch with pagination to avoid Supabase default row limit truncating long date ranges.
+      const allInsights: Array<{
+        campaign_id: string | null;
+        adset_id: string | null;
+        ad_id: string | null;
+        spend_usd: number | null;
+        leads_count: number | null;
+      }> = [];
+      let insightsFrom = 0;
+      const insightsBatchSize = 1000;
+      let insightsHasMore = true;
+
+      while (insightsHasMore) {
+        let insightsQuery = supabase
+          .from('daily_insights')
+          .select('campaign_id, adset_id, ad_id, spend_usd, leads_count')
+          .gte('date', startDate)
+          .lte('date', endDate)
+          .range(insightsFrom, insightsFrom + insightsBatchSize - 1);
+
+        if (accountId) {
+          insightsQuery = insightsQuery.eq('ad_account_id', accountId);
+        }
+
+        const { data: insightsBatch } = await insightsQuery;
+
+        if (insightsBatch && insightsBatch.length > 0) {
+          allInsights.push(...insightsBatch);
+          insightsFrom += insightsBatchSize;
+          insightsHasMore = insightsBatch.length === insightsBatchSize;
+        } else {
+          insightsHasMore = false;
+        }
       }
 
-      const { data: insightsData } = await insightsQuery;
-      
-      if (insightsData) {
-        for (const row of insightsData) {
-          const spend = Number(row.spend_usd) || 0;
-          const leads = row.leads_count || 0;
-          
-          // Aggregate by campaign
-          if (row.campaign_id) {
-            if (!dateRangeSpendByCampaign[row.campaign_id]) {
-              dateRangeSpendByCampaign[row.campaign_id] = { spend: 0, leads: 0 };
-            }
-            dateRangeSpendByCampaign[row.campaign_id].spend += spend;
-            dateRangeSpendByCampaign[row.campaign_id].leads += leads;
+      for (const row of allInsights) {
+        const spend = Number(row.spend_usd) || 0;
+        const leads = row.leads_count || 0;
+
+        // Aggregate by campaign
+        if (row.campaign_id) {
+          if (!dateRangeSpendByCampaign[row.campaign_id]) {
+            dateRangeSpendByCampaign[row.campaign_id] = { spend: 0, leads: 0 };
           }
-          
-          // Aggregate by ad set
-          if (row.adset_id) {
-            if (!dateRangeSpendByAdSet[row.adset_id]) {
-              dateRangeSpendByAdSet[row.adset_id] = { spend: 0, leads: 0 };
-            }
-            dateRangeSpendByAdSet[row.adset_id].spend += spend;
-            dateRangeSpendByAdSet[row.adset_id].leads += leads;
+          dateRangeSpendByCampaign[row.campaign_id].spend += spend;
+          dateRangeSpendByCampaign[row.campaign_id].leads += leads;
+        }
+
+        // Aggregate by ad set
+        if (row.adset_id) {
+          if (!dateRangeSpendByAdSet[row.adset_id]) {
+            dateRangeSpendByAdSet[row.adset_id] = { spend: 0, leads: 0 };
           }
-          
-          // Aggregate by ad
-          if (row.ad_id) {
-            if (!dateRangeSpendByAd[row.ad_id]) {
-              dateRangeSpendByAd[row.ad_id] = { spend: 0, leads: 0 };
-            }
-            dateRangeSpendByAd[row.ad_id].spend += spend;
-            dateRangeSpendByAd[row.ad_id].leads += leads;
+          dateRangeSpendByAdSet[row.adset_id].spend += spend;
+          dateRangeSpendByAdSet[row.adset_id].leads += leads;
+        }
+
+        // Aggregate by ad
+        if (row.ad_id) {
+          if (!dateRangeSpendByAd[row.ad_id]) {
+            dateRangeSpendByAd[row.ad_id] = { spend: 0, leads: 0 };
           }
+          dateRangeSpendByAd[row.ad_id].spend += spend;
+          dateRangeSpendByAd[row.ad_id].leads += leads;
         }
       }
     }
