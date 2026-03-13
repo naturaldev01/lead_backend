@@ -25,7 +25,9 @@ export class SyncController {
     totalForms: 0,
   };
 
-  private extractLeadsCount(actions: Array<{ action_type?: string; value?: string }> = []): number {
+  private extractLeadsCount(
+    actions: Array<{ action_type?: string; value?: string }> = [],
+  ): number {
     // Meta can report lead metrics under multiple action_type keys.
     // Use the maximum lead-like metric to avoid counting the same event twice.
     let maxLeadCount = 0;
@@ -91,14 +93,17 @@ export class SyncController {
       }
 
       const message = error.message || 'Unknown Supabase error';
-      const shouldRetry = this.isRetriableError(message) && attempt < maxRetries;
+      const shouldRetry =
+        this.isRetriableError(message) && attempt < maxRetries;
 
       if (!shouldRetry) {
         throw new Error(`${label}: ${message}`);
       }
 
       const waitMs = Math.min(1000 * Math.pow(2, attempt - 1), 8000);
-      this.logger.warn(`${label} (attempt ${attempt}/${maxRetries}) failed: ${message}. Retrying in ${waitMs}ms`);
+      this.logger.warn(
+        `${label} (attempt ${attempt}/${maxRetries}) failed: ${message}. Retrying in ${waitMs}ms`,
+      );
       await this.sleep(waitMs);
     }
   }
@@ -165,19 +170,32 @@ export class SyncController {
 
     const accountIdClean = accountId.replace('act_', '');
     const singleDate = date || new Date().toISOString().split('T')[0];
-    
-    this.logger.log(`Debug: Fetching insights for account ${accountIdClean}, date=${singleDate}`);
 
-    const insights = await this.metaService.getCampaignInsights(accountIdClean, singleDate, singleDate);
-    
+    this.logger.log(
+      `Debug: Fetching insights for account ${accountIdClean}, date=${singleDate}`,
+    );
+
+    const insights = await this.metaService.getCampaignInsights(
+      accountIdClean,
+      singleDate,
+      singleDate,
+    );
+
     const results = insights
-      .filter(i => !campaignName || i.campaign_name?.toLowerCase().includes(campaignName.toLowerCase()))
+      .filter(
+        (i) =>
+          !campaignName ||
+          i.campaign_name?.toLowerCase().includes(campaignName.toLowerCase()),
+      )
       .slice(0, 10)
-      .map(insight => {
+      .map((insight) => {
         const actionsSummary: Record<string, number> = {};
         if (insight.actions) {
           for (const action of insight.actions) {
-            actionsSummary[action.action_type] = parseInt(action.value || '0', 10);
+            actionsSummary[action.action_type] = parseInt(
+              action.value || '0',
+              10,
+            );
           }
         }
         return {
@@ -189,34 +207,34 @@ export class SyncController {
         };
       });
 
-    return { 
+    return {
       dateRange: singleDate,
       count: results.length,
-      campaigns: results 
+      campaigns: results,
     };
   }
 
   @Post('fix-leads')
   async fixLeadCounts() {
     const supabase = this.supabaseService.getClient();
-    
+
     // Fix daily_insights - divide by 2
     const { data: dailyData, error: dailyError } = await supabase
       .from('daily_insights')
       .update({ leads_count: supabase.rpc('div2', {}) })
       .gt('leads_count', 0);
-    
+
     // Direct SQL approach - update all records
     const { error: error1 } = await supabase.rpc('fix_lead_counts_daily');
     const { error: error2 } = await supabase.rpc('fix_lead_counts_campaigns');
-    
+
     if (error1 || error2) {
       // Fallback: manually fetch and update
       const { data: insights } = await supabase
         .from('daily_insights')
         .select('id, leads_count')
         .gt('leads_count', 0);
-      
+
       if (insights) {
         for (const row of insights) {
           await supabase
@@ -225,24 +243,29 @@ export class SyncController {
             .eq('id', row.id);
         }
       }
-      
+
       const { data: campaigns } = await supabase
         .from('campaigns')
         .select('id, insights_leads_count')
         .gt('insights_leads_count', 0);
-      
+
       if (campaigns) {
         for (const row of campaigns) {
           await supabase
             .from('campaigns')
-            .update({ insights_leads_count: Math.floor(row.insights_leads_count / 2) })
+            .update({
+              insights_leads_count: Math.floor(row.insights_leads_count / 2),
+            })
             .eq('id', row.id);
         }
       }
-      
-      return { success: true, message: 'Lead counts fixed via fallback method' };
+
+      return {
+        success: true,
+        message: 'Lead counts fixed via fallback method',
+      };
     }
-    
+
     return { success: true, message: 'Lead counts fixed' };
   }
 
@@ -252,7 +275,10 @@ export class SyncController {
     try {
       const pages = await this.metaService.getPages();
       for (const page of pages) {
-        const pageForms = await this.metaService.getLeadGenFormsWithPageToken(page.id, page.access_token);
+        const pageForms = await this.metaService.getLeadGenFormsWithPageToken(
+          page.id,
+          page.access_token,
+        );
         for (const form of pageForms) {
           forms.push({
             formId: form.id,
@@ -264,7 +290,7 @@ export class SyncController {
           });
         }
       }
-      return { success: true, forms: forms.filter(f => f.leadsCount > 0) };
+      return { success: true, forms: forms.filter((f) => f.leadsCount > 0) };
     } catch (error) {
       return { success: false, error: (error as Error).message };
     }
@@ -277,7 +303,10 @@ export class SyncController {
     @Query('pageAccessToken') pageAccessToken: string,
   ) {
     if (!formId || !pageAccessToken) {
-      return { success: false, error: 'formId and pageAccessToken are required' };
+      return {
+        success: false,
+        error: 'formId and pageAccessToken are required',
+      };
     }
 
     const supabase = this.supabaseService.getClient();
@@ -285,10 +314,13 @@ export class SyncController {
     let totalFetched = 0;
 
     try {
-      this.logger.log(`Starting streaming sync for form: ${formName || formId}`);
+      this.logger.log(
+        `Starting streaming sync for form: ${formName || formId}`,
+      );
 
       // Streaming: Sayfa sayfa çek ve hemen DB'ye yaz
-      let nextUrl: string | null = `https://graph.facebook.com/v19.0/${formId}/leads?access_token=${pageAccessToken}&fields=id,created_time,field_data,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,form_id&limit=100`;
+      let nextUrl: string | null =
+        `https://graph.facebook.com/v19.0/${formId}/leads?access_token=${pageAccessToken}&fields=id,created_time,field_data,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,form_id&limit=100`;
       let pageNum = 0;
 
       while (nextUrl) {
@@ -310,7 +342,9 @@ export class SyncController {
           .select('lead_id')
           .in('lead_id', leadIds);
 
-        const existingIds = new Set((existingLeads || []).map((l: any) => l.lead_id));
+        const existingIds = new Set(
+          (existingLeads || []).map((l: any) => l.lead_id),
+        );
         const newLeads = leads.filter((l: any) => !existingIds.has(l.id));
 
         if (newLeads.length > 0) {
@@ -338,7 +372,10 @@ export class SyncController {
               const originalLead = newLeads[j];
               if (originalLead.field_data) {
                 for (const field of originalLead.field_data) {
-                  const mappedFieldName = await this.fieldMappingsService.getMappedFieldName(field.name);
+                  const mappedFieldName =
+                    await this.fieldMappingsService.getMappedFieldName(
+                      field.name,
+                    );
                   fieldDataToInsert.push({
                     lead_id: insertedLeads[j].id,
                     field_name: field.name,
@@ -355,11 +392,15 @@ export class SyncController {
           }
         }
 
-        this.logger.log(`Page ${pageNum}: Fetched ${leads.length}, Inserted ${newLeads.length} new leads`);
+        this.logger.log(
+          `Page ${pageNum}: Fetched ${leads.length}, Inserted ${newLeads.length} new leads`,
+        );
         nextUrl = response.data.paging?.next || null;
       }
 
-      this.logger.log(`Form sync completed: ${totalFetched} fetched, ${totalInserted} inserted`);
+      this.logger.log(
+        `Form sync completed: ${totalFetched} fetched, ${totalInserted} inserted`,
+      );
       return {
         success: true,
         formId,
@@ -376,7 +417,11 @@ export class SyncController {
   @Post('sync/leads/streaming')
   async syncLeadsStreaming() {
     if (this.syncProgress.status === 'running') {
-      return { success: false, message: 'Sync already running', progress: this.syncProgress };
+      return {
+        success: false,
+        message: 'Sync already running',
+        progress: this.syncProgress,
+      };
     }
 
     this.syncProgress = {
@@ -396,7 +441,10 @@ export class SyncController {
       // Önce tüm formları topla
       const allForms: any[] = [];
       for (const page of pages) {
-        const forms = await this.metaService.getLeadGenFormsWithPageToken(page.id, page.access_token);
+        const forms = await this.metaService.getLeadGenFormsWithPageToken(
+          page.id,
+          page.access_token,
+        );
         for (const form of forms) {
           if (form.leads_count && form.leads_count > 0) {
             allForms.push({ ...form, page });
@@ -415,17 +463,20 @@ export class SyncController {
         this.syncProgress.currentPage = page.name;
         this.syncProgress.currentForm = form.name;
 
-        this.logger.log(`Processing form: ${form.name} (${form.leads_count} leads)`);
+        this.logger.log(
+          `Processing form: ${form.name} (${form.leads_count} leads)`,
+        );
 
         try {
           // Streaming pagination
-          let nextUrl: string | null = `https://graph.facebook.com/v19.0/${form.id}/leads?access_token=${page.access_token}&fields=id,created_time,field_data,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,form_id&limit=100`;
-          
+          let nextUrl: string | null =
+            `https://graph.facebook.com/v19.0/${form.id}/leads?access_token=${page.access_token}&fields=id,created_time,field_data,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,form_id&limit=100`;
+
           while (nextUrl) {
             const axios = require('axios');
             const response = await axios.get(nextUrl);
             const leads = response.data.data || [];
-            
+
             if (leads.length === 0) {
               nextUrl = response.data.paging?.next || null;
               continue;
@@ -440,7 +491,9 @@ export class SyncController {
               .select('lead_id')
               .in('lead_id', leadIds);
 
-            const existingIds = new Set((existingLeads || []).map((l: any) => l.lead_id));
+            const existingIds = new Set(
+              (existingLeads || []).map((l: any) => l.lead_id),
+            );
             const newLeads = leads.filter((l: any) => !existingIds.has(l.id));
 
             if (newLeads.length > 0) {
@@ -467,7 +520,10 @@ export class SyncController {
                   const originalLead = newLeads[j];
                   if (originalLead.field_data) {
                     for (const field of originalLead.field_data) {
-                      const mappedFieldName = await this.fieldMappingsService.getMappedFieldName(field.name);
+                      const mappedFieldName =
+                        await this.fieldMappingsService.getMappedFieldName(
+                          field.name,
+                        );
                       fieldDataToInsert.push({
                         lead_id: insertedLeads[j].id,
                         field_name: field.name,
@@ -479,7 +535,9 @@ export class SyncController {
                 }
 
                 if (fieldDataToInsert.length > 0) {
-                  await supabase.from('lead_field_data').insert(fieldDataToInsert);
+                  await supabase
+                    .from('lead_field_data')
+                    .insert(fieldDataToInsert);
                 }
               }
             }
@@ -491,7 +549,9 @@ export class SyncController {
         }
 
         this.syncProgress.formsProcessed++;
-        this.logger.log(`Progress: ${this.syncProgress.formsProcessed}/${this.syncProgress.totalForms} forms, ${this.syncProgress.totalInserted} leads inserted`);
+        this.logger.log(
+          `Progress: ${this.syncProgress.formsProcessed}/${this.syncProgress.totalForms} forms, ${this.syncProgress.totalInserted} leads inserted`,
+        );
       }
 
       await supabase.from('sync_logs').insert({
@@ -529,30 +589,40 @@ export class SyncController {
       const adAccounts =
         allowedSet.size > 0
           ? rawAdAccounts.filter((account) =>
-              allowedSet.has(this.normalizeAccountId(account.account_id || account.id)),
+              allowedSet.has(
+                this.normalizeAccountId(account.account_id || account.id),
+              ),
             )
           : rawAdAccounts;
 
       for (const account of adAccounts) {
-        const accountId = this.normalizeAccountId(account.account_id || account.id);
-
-        const { error: accountUpsertError } = await supabase.from('ad_accounts').upsert(
-          {
-            account_id: accountId,
-            account_name: account.name,
-          },
-          { onConflict: 'account_id' },
+        const accountId = this.normalizeAccountId(
+          account.account_id || account.id,
         );
+
+        const { error: accountUpsertError } = await supabase
+          .from('ad_accounts')
+          .upsert(
+            {
+              account_id: accountId,
+              account_name: account.name,
+            },
+            { onConflict: 'account_id' },
+          );
         if (accountUpsertError) {
-          throw new Error(`Failed to upsert ad account ${accountId}: ${accountUpsertError.message}`);
+          throw new Error(
+            `Failed to upsert ad account ${accountId}: ${accountUpsertError.message}`,
+          );
         }
 
         // Batch upsert campaigns
         const campaigns = await this.metaService.getCampaigns(accountId);
-        this.logger.log(`Found ${campaigns.length} campaigns for account ${account.name}`);
-        
+        this.logger.log(
+          `Found ${campaigns.length} campaigns for account ${account.name}`,
+        );
+
         if (campaigns.length > 0) {
-          const campaignsData = campaigns.map(campaign => ({
+          const campaignsData = campaigns.map((campaign) => ({
             campaign_id: campaign.id,
             name: campaign.name,
             type: campaign.objective,
@@ -561,19 +631,25 @@ export class SyncController {
           }));
           for (let i = 0; i < campaignsData.length; i += 500) {
             const chunk = campaignsData.slice(i, i + 500);
-            const { error } = await supabase.from('campaigns').upsert(chunk, { onConflict: 'campaign_id' });
+            const { error } = await supabase
+              .from('campaigns')
+              .upsert(chunk, { onConflict: 'campaign_id' });
             if (error) {
-              throw new Error(`Failed to upsert campaigns for account ${accountId}: ${error.message}`);
+              throw new Error(
+                `Failed to upsert campaigns for account ${accountId}: ${error.message}`,
+              );
             }
           }
         }
 
         // Batch upsert ad sets
         const adSets = await this.metaService.getAdSets(accountId);
-        this.logger.log(`Found ${adSets.length} ad sets for account ${account.name}`);
+        this.logger.log(
+          `Found ${adSets.length} ad sets for account ${account.name}`,
+        );
 
         if (adSets.length > 0) {
-          const adSetsData = adSets.map(adSet => ({
+          const adSetsData = adSets.map((adSet) => ({
             adset_id: adSet.id,
             name: adSet.name,
             campaign_id: adSet.campaign_id,
@@ -584,9 +660,13 @@ export class SyncController {
           // Batch in chunks of 500 to avoid payload limits
           for (let i = 0; i < adSetsData.length; i += 500) {
             const chunk = adSetsData.slice(i, i + 500);
-            const { error } = await supabase.from('ad_sets').upsert(chunk, { onConflict: 'adset_id' });
+            const { error } = await supabase
+              .from('ad_sets')
+              .upsert(chunk, { onConflict: 'adset_id' });
             if (error) {
-              throw new Error(`Failed to upsert ad sets for account ${accountId}: ${error.message}`);
+              throw new Error(
+                `Failed to upsert ad sets for account ${accountId}: ${error.message}`,
+              );
             }
           }
         }
@@ -596,7 +676,7 @@ export class SyncController {
         this.logger.log(`Found ${ads.length} ads for account ${account.name}`);
 
         if (ads.length > 0) {
-          const adsData = ads.map(ad => ({
+          const adsData = ads.map((ad) => ({
             ad_id: ad.id,
             name: ad.name,
             adset_id: ad.adset_id,
@@ -606,20 +686,28 @@ export class SyncController {
           }));
           for (let i = 0; i < adsData.length; i += 500) {
             const chunk = adsData.slice(i, i + 500);
-            const { error } = await supabase.from('ads').upsert(chunk, { onConflict: 'ad_id' });
+            const { error } = await supabase
+              .from('ads')
+              .upsert(chunk, { onConflict: 'ad_id' });
             if (error) {
-              throw new Error(`Failed to upsert ads for account ${accountId}: ${error.message}`);
+              throw new Error(
+                `Failed to upsert ads for account ${accountId}: ${error.message}`,
+              );
             }
           }
         }
 
         const today = new Date();
         const lookbackDays = this.metaService.getSyncLookbackDays();
-        const startDate = new Date(today.getTime() - lookbackDays * 24 * 60 * 60 * 1000);
+        const startDate = new Date(
+          today.getTime() - lookbackDays * 24 * 60 * 60 * 1000,
+        );
         const startDateStr = startDate.toISOString().split('T')[0];
         const endDateStr = today.toISOString().split('T')[0];
-        this.logger.log(`Fetching insights for last ${lookbackDays} days: ${startDateStr} to ${endDateStr}`);
-        
+        this.logger.log(
+          `Fetching insights for last ${lookbackDays} days: ${startDateStr} to ${endDateStr}`,
+        );
+
         // Get and update campaign insights (spend + leads count)
         const campaignInsights = await this.metaService.getCampaignInsights(
           accountId,
@@ -669,21 +757,29 @@ export class SyncController {
         );
 
         // Fetch and save daily insights for date filtering at AD level (includes campaign_id and adset_id)
-        this.logger.log(`Fetching daily insights at AD level for account ${account.name}`);
+        this.logger.log(
+          `Fetching daily insights at AD level for account ${account.name}`,
+        );
         const dailyInsights = await this.metaService.getDailyInsights(
           accountId,
           startDateStr,
           endDateStr,
           'ad',
         );
-        this.logger.log(`Found ${dailyInsights.length} daily ad-level insights`);
+        this.logger.log(
+          `Found ${dailyInsights.length} daily ad-level insights`,
+        );
 
         if (dailyInsights.length > 0) {
           // Filter out insights without ad_id (invalid data that causes duplicates)
-          const validInsights = dailyInsights.filter(insight => insight.ad_id && insight.ad_id.trim() !== '');
-          this.logger.log(`Filtered ${dailyInsights.length - validInsights.length} insights without ad_id`);
+          const validInsights = dailyInsights.filter(
+            (insight) => insight.ad_id && insight.ad_id.trim() !== '',
+          );
+          this.logger.log(
+            `Filtered ${dailyInsights.length - validInsights.length} insights without ad_id`,
+          );
 
-          const dailyData = validInsights.map(insight => {
+          const dailyData = validInsights.map((insight) => {
             const leadsCount = this.extractLeadsCount(insight.actions || []);
             return {
               date: insight.date_start,
@@ -704,13 +800,16 @@ export class SyncController {
               const chunk = dailyData.slice(i, i + 500);
               await this.executeSupabaseWriteWithRetry(
                 `Failed to upsert daily insights for account ${accountId}`,
-                () => supabase.from('daily_insights').upsert(chunk, { 
-                  onConflict: 'date,ad_id,ad_account_id',
-                  ignoreDuplicates: false 
-                }),
+                () =>
+                  supabase.from('daily_insights').upsert(chunk, {
+                    onConflict: 'date,ad_id,ad_account_id',
+                    ignoreDuplicates: false,
+                  }),
               );
             }
-            this.logger.log(`Saved ${dailyData.length} daily insights for account ${account.name}`);
+            this.logger.log(
+              `Saved ${dailyData.length} daily insights for account ${account.name}`,
+            );
           }
         }
       }
@@ -720,7 +819,9 @@ export class SyncController {
         status: 'success',
       });
       if (syncLogError) {
-        this.logger.warn(`Failed to write success sync log: ${syncLogError.message}`);
+        this.logger.warn(
+          `Failed to write success sync log: ${syncLogError.message}`,
+        );
       }
 
       return { success: true, message: 'Sync completed successfully' };
@@ -749,11 +850,19 @@ export class SyncController {
     @Query('accountId') accountId?: string,
   ) {
     if (!startDate || !endDate) {
-      return { success: false, error: 'startDate and endDate are required (format: YYYY-MM-DD)' };
+      return {
+        success: false,
+        error: 'startDate and endDate are required (format: YYYY-MM-DD)',
+      };
     }
 
     const supabase = this.supabaseService.getClient();
-    const results: { account: string; fetched: number; saved: number; errors: string[] }[] = [];
+    const results: {
+      account: string;
+      fetched: number;
+      saved: number;
+      errors: string[];
+    }[] = [];
 
     try {
       const rawAdAccounts = await this.metaService.getAdAccounts();
@@ -767,7 +876,9 @@ export class SyncController {
       let adAccounts =
         allowedSet.size > 0
           ? rawAdAccounts.filter((account) =>
-              allowedSet.has(this.normalizeAccountId(account.account_id || account.id)),
+              allowedSet.has(
+                this.normalizeAccountId(account.account_id || account.id),
+              ),
             )
           : rawAdAccounts;
 
@@ -775,17 +886,25 @@ export class SyncController {
       if (accountId) {
         const targetAccountId = this.normalizeAccountId(accountId);
         adAccounts = adAccounts.filter(
-          (account) => this.normalizeAccountId(account.account_id || account.id) === targetAccountId,
+          (account) =>
+            this.normalizeAccountId(account.account_id || account.id) ===
+            targetAccountId,
         );
       }
 
-      this.logger.log(`Syncing date range ${startDate} to ${endDate} for ${adAccounts.length} account(s)`);
+      this.logger.log(
+        `Syncing date range ${startDate} to ${endDate} for ${adAccounts.length} account(s)`,
+      );
 
       for (const account of adAccounts) {
-        const acctId = this.normalizeAccountId(account.account_id || account.id);
+        const acctId = this.normalizeAccountId(
+          account.account_id || account.id,
+        );
         const accountErrors: string[] = [];
 
-        this.logger.log(`Fetching daily insights for account ${account.name} (${acctId})`);
+        this.logger.log(
+          `Fetching daily insights for account ${account.name} (${acctId})`,
+        );
 
         // Use smaller 7-day batches for targeted sync
         const dailyInsights = await this.metaService.getDailyInsightsSmallBatch(
@@ -795,12 +914,16 @@ export class SyncController {
           'ad',
         );
 
-        this.logger.log(`Fetched ${dailyInsights.length} daily insights for ${account.name}`);
+        this.logger.log(
+          `Fetched ${dailyInsights.length} daily insights for ${account.name}`,
+        );
 
         if (dailyInsights.length > 0) {
-          const validInsights = dailyInsights.filter(insight => insight.ad_id && insight.ad_id.trim() !== '');
+          const validInsights = dailyInsights.filter(
+            (insight) => insight.ad_id && insight.ad_id.trim() !== '',
+          );
 
-          const dailyData = validInsights.map(insight => {
+          const dailyData = validInsights.map((insight) => {
             const leadsCount = this.extractLeadsCount(insight.actions || []);
             return {
               date: insight.date_start,
@@ -821,16 +944,19 @@ export class SyncController {
               try {
                 await this.executeSupabaseWriteWithRetry(
                   `Failed to upsert daily insights for account ${acctId}`,
-                  () => supabase.from('daily_insights').upsert(chunk, {
-                    onConflict: 'date,ad_id,ad_account_id',
-                    ignoreDuplicates: false,
-                  }),
+                  () =>
+                    supabase.from('daily_insights').upsert(chunk, {
+                      onConflict: 'date,ad_id,ad_account_id',
+                      ignoreDuplicates: false,
+                    }),
                 );
               } catch (err) {
                 accountErrors.push((err as Error).message);
               }
             }
-            this.logger.log(`Saved ${dailyData.length} daily insights for account ${account.name}`);
+            this.logger.log(
+              `Saved ${dailyData.length} daily insights for account ${account.name}`,
+            );
           }
 
           results.push({

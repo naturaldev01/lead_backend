@@ -1,6 +1,17 @@
-import { Controller, Get, Post, Patch, Delete, Body, Param } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Patch,
+  Delete,
+  Body,
+  Param,
+} from '@nestjs/common';
 import { FieldMappingsService } from './field-mappings.service';
-import { CreateFieldMappingDto, UpdateFieldMappingDto } from './dto/field-mapping.dto';
+import {
+  CreateFieldMappingDto,
+  UpdateFieldMappingDto,
+} from './dto/field-mapping.dto';
 
 @Controller('api/field-mappings')
 export class FieldMappingsController {

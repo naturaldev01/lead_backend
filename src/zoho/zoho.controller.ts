@@ -48,7 +48,7 @@ export class ZohoController {
   @Get('attribution/:leadId')
   async getAttribution(@Param('leadId') leadId: string) {
     const attribution = await this.zohoService.getAttribution(leadId);
-    
+
     if (!attribution) {
       return { found: false };
     }
@@ -70,19 +70,28 @@ export class ZohoController {
     @Query('endDate') endDate?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('offerFilter') offerFilter?: 'all' | 'with_offer' | 'without_offer',
+    @Query('sortBy')
+    sortBy?: 'created_at' | 'offer_amount' | 'deal_amount' | 'payment_amount' | 'roas',
+    @Query('sortDirection') sortDirection?: 'asc' | 'desc',
   ) {
     return this.zohoService.getAttributionList(
       startDate,
       endDate,
       page ? parseInt(page, 10) : 1,
       limit ? parseInt(limit, 10) : 25,
+      offerFilter,
+      sortBy,
+      sortDirection,
     );
   }
 
   @Get('cost/:phone')
   async getCostByPhone(@Param('phone') phone: string) {
-    const result = await this.zohoService.lookupByPhone(decodeURIComponent(phone));
-    
+    const result = await this.zohoService.lookupByPhone(
+      decodeURIComponent(phone),
+    );
+
     if (!result.found) {
       return {
         found: false,
@@ -99,6 +108,7 @@ export class ZohoController {
       attributedSpend: result.costs?.attributedSpend,
       currency: result.costs?.currency,
       funnelStage: result.funnel?.currentStage || 'lead',
+      offerAmount: result.funnel?.offerAmount,
       dealAmount: result.funnel?.dealAmount,
       paymentAmount: result.funnel?.paymentAmount,
       roas: result.roas,

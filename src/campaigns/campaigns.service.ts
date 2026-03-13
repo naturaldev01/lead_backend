@@ -32,11 +32,13 @@ export class CampaignsService {
 
     let query = supabase
       .from('campaigns')
-      .select(`
+      .select(
+        `
         *,
         ad_accounts (account_name),
         leads (count)
-      `)
+      `,
+      )
       .order('spend_usd', { ascending: false });
 
     if (accountId) {
@@ -65,11 +67,18 @@ export class CampaignsService {
     }));
   }
 
-  async getHierarchy(accountId?: string, search?: string, country?: string, level?: string, startDate?: string, endDate?: string) {
+  async getHierarchy(
+    accountId?: string,
+    search?: string,
+    country?: string,
+    level?: string,
+    startDate?: string,
+    endDate?: string,
+  ) {
     // Generate cache key
     const cacheKey = `${accountId || ''}_${search || ''}_${country || ''}_${level || ''}_${startDate || ''}_${endDate || ''}`;
     const cached = this.hierarchyCache.get(cacheKey);
-    
+
     if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
       return cached.data;
     }
@@ -78,10 +87,12 @@ export class CampaignsService {
 
     let campaignQuery = supabase
       .from('campaigns')
-      .select(`
+      .select(
+        `
         *,
         ad_accounts (account_name)
-      `)
+      `,
+      )
       .order('spend_usd', { ascending: false });
 
     let adSetQuery = supabase
@@ -121,10 +132,17 @@ export class CampaignsService {
     const ads = adsResult.data || [];
 
     // If date range is specified, fetch aggregated data from daily_insights
-    let dateRangeSpendByCampaign: Record<string, { spend: number; leads: number }> = {};
-    let dateRangeSpendByAdSet: Record<string, { spend: number; leads: number }> = {};
-    let dateRangeSpendByAd: Record<string, { spend: number; leads: number }> = {};
-    
+    const dateRangeSpendByCampaign: Record<
+      string,
+      { spend: number; leads: number }
+    > = {};
+    const dateRangeSpendByAdSet: Record<
+      string,
+      { spend: number; leads: number }
+    > = {};
+    const dateRangeSpendByAd: Record<string, { spend: number; leads: number }> =
+      {};
+
     if (startDate && endDate) {
       // Fetch with pagination to avoid Supabase default row limit truncating long date ranges.
       const allInsights: Array<{
@@ -199,13 +217,13 @@ export class CampaignsService {
     let from = 0;
     const batchSize = 1000;
     let hasMore = true;
-    
+
     while (hasMore) {
       const { data: leadsBatch } = await supabase
         .from('leads')
         .select('campaign_id')
         .range(from, from + batchSize - 1);
-      
+
       if (leadsBatch && leadsBatch.length > 0) {
         allLeads.push(...leadsBatch);
         from += batchSize;
@@ -215,92 +233,121 @@ export class CampaignsService {
       }
     }
 
-    const leadsCountByCampaign = allLeads.reduce((acc: Record<string, number>, lead) => {
-      if (lead.campaign_id) {
-        acc[lead.campaign_id] = (acc[lead.campaign_id] || 0) + 1;
-      }
-      return acc;
-    }, {});
+    const leadsCountByCampaign = allLeads.reduce(
+      (acc: Record<string, number>, lead) => {
+        if (lead.campaign_id) {
+          acc[lead.campaign_id] = (acc[lead.campaign_id] || 0) + 1;
+        }
+        return acc;
+      },
+      {},
+    );
 
-    const adsGroupedByAdSet = ads.reduce((acc: Record<string, typeof ads>, ad) => {
-      if (ad.adset_id) {
-        if (!acc[ad.adset_id]) acc[ad.adset_id] = [];
-        acc[ad.adset_id].push(ad);
-      }
-      return acc;
-    }, {});
+    const adsGroupedByAdSet = ads.reduce(
+      (acc: Record<string, typeof ads>, ad) => {
+        if (ad.adset_id) {
+          if (!acc[ad.adset_id]) acc[ad.adset_id] = [];
+          acc[ad.adset_id].push(ad);
+        }
+        return acc;
+      },
+      {},
+    );
 
-    const adSetsGroupedByCampaign = adSets.reduce((acc: Record<string, typeof adSets>, adSet) => {
-      if (adSet.campaign_id) {
-        if (!acc[adSet.campaign_id]) acc[adSet.campaign_id] = [];
-        acc[adSet.campaign_id].push({
-          ...adSet,
-          ads: adsGroupedByAdSet[adSet.adset_id] || [],
-        });
-      }
-      return acc;
-    }, {});
+    const adSetsGroupedByCampaign = adSets.reduce(
+      (acc: Record<string, typeof adSets>, adSet) => {
+        if (adSet.campaign_id) {
+          if (!acc[adSet.campaign_id]) acc[adSet.campaign_id] = [];
+          acc[adSet.campaign_id].push({
+            ...adSet,
+            ads: adsGroupedByAdSet[adSet.adset_id] || [],
+          });
+        }
+        return acc;
+      },
+      {},
+    );
 
     const allCampaigns = campaigns.map((campaign) => {
       // Get campaign's date-filtered spend (from daily_insights) for proportional distribution
       const campaignDateData = dateRangeSpendByCampaign[campaign.campaign_id];
-      const campaignDateSpend = startDate && endDate ? (campaignDateData?.spend || 0) : 0;
-      const campaignDateLeads = startDate && endDate ? (campaignDateData?.leads || 0) : 0;
-      
+      const campaignDateSpend =
+        startDate && endDate ? campaignDateData?.spend || 0 : 0;
+      const campaignDateLeads =
+        startDate && endDate ? campaignDateData?.leads || 0 : 0;
+
       // Calculate campaign's all-time total spend from ads for ratio calculation
       const campaignAllTimeSpend = campaign.spend_usd || 0;
 
-      const adSetsWithCountries = (adSetsGroupedByCampaign[campaign.campaign_id] || []).map((adSet) => {
-        const adsWithCountries = (adSet.ads || []).map((ad: { id: string; ad_id: string; name: string; status: string; spend_usd: number; insights_leads_count?: number }) => {
-          const adAllTimeSpend = ad.spend_usd || 0;
-          const adAllTimeLeads = ad.insights_leads_count || 0;
-          
-          let adSpend: number;
-          let adLeads: number;
-          
-          if (startDate && endDate) {
-            // For date filtering: use daily_insights data only - no proportional distribution
-            // If ad-level data doesn't exist for this date range, it means the ad had no activity
-            const adDateData = dateRangeSpendByAd[ad.ad_id];
-            if (adDateData) {
-              adSpend = adDateData.spend;
-              adLeads = adDateData.leads;
+      const adSetsWithCountries = (
+        adSetsGroupedByCampaign[campaign.campaign_id] || []
+      ).map((adSet) => {
+        const adsWithCountries = (adSet.ads || []).map(
+          (ad: {
+            id: string;
+            ad_id: string;
+            name: string;
+            status: string;
+            spend_usd: number;
+            insights_leads_count?: number;
+          }) => {
+            const adAllTimeSpend = ad.spend_usd || 0;
+            const adAllTimeLeads = ad.insights_leads_count || 0;
+
+            let adSpend: number;
+            let adLeads: number;
+
+            if (startDate && endDate) {
+              // For date filtering: use daily_insights data only - no proportional distribution
+              // If ad-level data doesn't exist for this date range, it means the ad had no activity
+              const adDateData = dateRangeSpendByAd[ad.ad_id];
+              if (adDateData) {
+                adSpend = adDateData.spend;
+                adLeads = adDateData.leads;
+              } else {
+                // No data for this ad in the date range = no spend/leads
+                adSpend = 0;
+                adLeads = 0;
+              }
             } else {
-              // No data for this ad in the date range = no spend/leads
-              adSpend = 0;
-              adLeads = 0;
+              // No date filter: use all-time values
+              adSpend = adAllTimeSpend;
+              adLeads = adAllTimeLeads;
             }
-          } else {
-            // No date filter: use all-time values
-            adSpend = adAllTimeSpend;
-            adLeads = adAllTimeLeads;
-          }
-          
-          return {
-            id: ad.id,
-            adId: ad.ad_id,
-            name: ad.name,
-            leads: adLeads,
-            status: ad.status,
-            spendUsd: adSpend,
-            countries: parseCountriesFromName(ad.name),
-          };
-        });
+
+            return {
+              id: ad.id,
+              adId: ad.ad_id,
+              name: ad.name,
+              leads: adLeads,
+              status: ad.status,
+              spendUsd: adSpend,
+              countries: parseCountriesFromName(ad.name),
+            };
+          },
+        );
 
         const adSetCountries = parseCountriesFromName(adSet.name);
         // Collect all unique countries from ads
         const allAdCountries = new Set<string>();
         adsWithCountries.forEach((ad: { countries: string[] }) => {
-          ad.countries.forEach(c => allAdCountries.add(c));
+          ad.countries.forEach((c) => allAdCountries.add(c));
         });
         // AdSet shows its own countries + inherited from ads if adSet has none
-        const effectiveAdSetCountries = adSetCountries.length > 0 
-          ? adSetCountries 
-          : Array.from(allAdCountries);
+        const effectiveAdSetCountries =
+          adSetCountries.length > 0
+            ? adSetCountries
+            : Array.from(allAdCountries);
 
         // Ad Set spend = sum of all Ads' spend (hierarchical aggregation)
-        const adSetSpend = adsWithCountries.reduce((sum, ad) => sum + (ad.spendUsd || 0), 0);
-        const adSetLeads = adsWithCountries.reduce((sum, ad) => sum + (ad.leads || 0), 0);
+        const adSetSpend = adsWithCountries.reduce(
+          (sum, ad) => sum + (ad.spendUsd || 0),
+          0,
+        );
+        const adSetLeads = adsWithCountries.reduce(
+          (sum, ad) => sum + (ad.leads || 0),
+          0,
+        );
 
         return {
           id: adSet.id,
@@ -319,7 +366,7 @@ export class CampaignsService {
       const campaignParsedCountries = parseCountriesFromName(campaign.name);
       const allCampaignCountries = new Set<string>(campaignParsedCountries);
       adSetsWithCountries.forEach((adSet: { countries: string[] }) => {
-        adSet.countries.forEach(c => allCampaignCountries.add(c));
+        adSet.countries.forEach((c) => allCampaignCountries.add(c));
       });
       const campaignCountries = Array.from(allCampaignCountries);
 
@@ -327,15 +374,21 @@ export class CampaignsService {
       // This ensures accurate totals even when ad-level data is incomplete
       let campaignSpend: number;
       let campaignLeads: number;
-      
+
       if (startDate && endDate) {
         // Use pre-aggregated campaign totals from daily_insights
         campaignSpend = campaignDateSpend;
         campaignLeads = campaignDateLeads;
       } else {
         // All-time: use hierarchical aggregation from ads
-        campaignSpend = adSetsWithCountries.reduce((sum, adSet) => sum + (adSet.spendUsd || 0), 0);
-        campaignLeads = adSetsWithCountries.reduce((sum, adSet) => sum + (adSet.leads || 0), 0);
+        campaignSpend = adSetsWithCountries.reduce(
+          (sum, adSet) => sum + (adSet.spendUsd || 0),
+          0,
+        );
+        campaignLeads = adSetsWithCountries.reduce(
+          (sum, adSet) => sum + (adSet.leads || 0),
+          0,
+        );
       }
 
       return {
@@ -356,64 +409,104 @@ export class CampaignsService {
     });
 
     // Filter out campaigns with zero spend when date filter is applied
-    const filteredByDateCampaigns = startDate && endDate
-      ? allCampaigns.filter((c) => c.spendUsd > 0 || c.leads > 0)
-      : allCampaigns;
+    const filteredByDateCampaigns =
+      startDate && endDate
+        ? allCampaigns.filter((c) => c.spendUsd > 0 || c.leads > 0)
+        : allCampaigns;
 
     // If no filters, return and cache
     if (!country && !level) {
-      this.hierarchyCache.set(cacheKey, { data: filteredByDateCampaigns, timestamp: Date.now() });
+      this.hierarchyCache.set(cacheKey, {
+        data: filteredByDateCampaigns,
+        timestamp: Date.now(),
+      });
       return filteredByDateCampaigns;
     }
 
     // Apply filters
-    const result = filteredByDateCampaigns.map((campaign) => {
-      let filteredAdSets = campaign.adSets;
+    const result = filteredByDateCampaigns
+      .map((campaign) => {
+        let filteredAdSets = campaign.adSets;
 
-      // Apply country filter at all levels
-      if (country) {
-        const countryUpper = country.toUpperCase();
-        
-        filteredAdSets = filteredAdSets.map((adSet: { countries: string[]; ads: { countries: string[]; name: string; id: string; adId: string; leads: number; status: string; spendUsd: number }[]; id: string; adSetId: string; name: string; status: string; optimizationGoal: string; spendUsd: number; leads: number }) => ({
-          ...adSet,
-          ads: adSet.ads.filter((ad) => ad.countries.includes(countryUpper)),
-        })).filter((adSet: { countries: string[]; ads: unknown[] }) => 
-          adSet.countries.includes(countryUpper) || adSet.ads.length > 0
-        );
+        // Apply country filter at all levels
+        if (country) {
+          const countryUpper = country.toUpperCase();
 
-        const hasCountryInCampaign = campaign.countries.includes(countryUpper);
-        if (!hasCountryInCampaign && filteredAdSets.length === 0) {
-          return null;
+          filteredAdSets = filteredAdSets
+            .map(
+              (adSet: {
+                countries: string[];
+                ads: {
+                  countries: string[];
+                  name: string;
+                  id: string;
+                  adId: string;
+                  leads: number;
+                  status: string;
+                  spendUsd: number;
+                }[];
+                id: string;
+                adSetId: string;
+                name: string;
+                status: string;
+                optimizationGoal: string;
+                spendUsd: number;
+                leads: number;
+              }) => ({
+                ...adSet,
+                ads: adSet.ads.filter((ad) =>
+                  ad.countries.includes(countryUpper),
+                ),
+              }),
+            )
+            .filter(
+              (adSet: { countries: string[]; ads: unknown[] }) =>
+                adSet.countries.includes(countryUpper) || adSet.ads.length > 0,
+            );
+
+          const hasCountryInCampaign =
+            campaign.countries.includes(countryUpper);
+          if (!hasCountryInCampaign && filteredAdSets.length === 0) {
+            return null;
+          }
         }
-      }
 
-      // Apply level filter
-      if (level === 'ad') {
-        filteredAdSets = filteredAdSets.filter((adSet: { ads: unknown[] }) => adSet.ads.length > 0);
-        if (filteredAdSets.length === 0) {
-          return null;
+        // Apply level filter
+        if (level === 'ad') {
+          filteredAdSets = filteredAdSets.filter(
+            (adSet: { ads: unknown[] }) => adSet.ads.length > 0,
+          );
+          if (filteredAdSets.length === 0) {
+            return null;
+          }
+        } else if (level === 'adset') {
+          if (filteredAdSets.length === 0) {
+            return null;
+          }
         }
-      } else if (level === 'adset') {
-        if (filteredAdSets.length === 0) {
-          return null;
-        }
-      }
 
-      return {
-        ...campaign,
-        adSets: filteredAdSets,
-      };
-    }).filter((campaign): campaign is NonNullable<typeof campaign> => campaign !== null);
+        return {
+          ...campaign,
+          adSets: filteredAdSets,
+        };
+      })
+      .filter(
+        (campaign): campaign is NonNullable<typeof campaign> =>
+          campaign !== null,
+      );
 
     // Cache the result
     this.hierarchyCache.set(cacheKey, { data: result, timestamp: Date.now() });
-    
+
     return result;
   }
 
   async getAvailableCountries() {
     // Return cached if still valid
-    if (this.countriesCache && Date.now() - this.countriesCacheTime < this.COUNTRIES_CACHE_TTL) {
+    if (
+      this.countriesCache &&
+      Date.now() - this.countriesCacheTime < this.COUNTRIES_CACHE_TTL
+    ) {
       return this.countriesCache;
     }
 
@@ -440,7 +533,7 @@ export class CampaignsService {
 
     this.countriesCache = Array.from(countries).sort();
     this.countriesCacheTime = Date.now();
-    
+
     return this.countriesCache;
   }
 
@@ -453,51 +546,68 @@ export class CampaignsService {
       for (const account of adAccounts) {
         const { error: accountError } = await supabase
           .from('ad_accounts')
-          .upsert({
-            account_id: account.account_id,
-            account_name: account.name,
-          }, { onConflict: 'account_id' });
+          .upsert(
+            {
+              account_id: account.account_id,
+              account_name: account.name,
+            },
+            { onConflict: 'account_id' },
+          );
 
         if (accountError) {
-          this.logger.error(`Failed to upsert ad account ${account.account_id}`, accountError);
+          this.logger.error(
+            `Failed to upsert ad account ${account.account_id}`,
+            accountError,
+          );
           continue;
         }
 
         // Sync campaigns
-        const campaigns = await this.metaService.getCampaigns(account.account_id);
+        const campaigns = await this.metaService.getCampaigns(
+          account.account_id,
+        );
         for (const campaign of campaigns) {
-          await supabase.from('campaigns').upsert({
-            campaign_id: campaign.id,
-            name: campaign.name,
-            type: campaign.objective,
-            ad_account_id: account.account_id,
-          }, { onConflict: 'campaign_id' });
+          await supabase.from('campaigns').upsert(
+            {
+              campaign_id: campaign.id,
+              name: campaign.name,
+              type: campaign.objective,
+              ad_account_id: account.account_id,
+            },
+            { onConflict: 'campaign_id' },
+          );
         }
 
         // Sync ad sets
         const adSets = await this.metaService.getAdSets(account.account_id);
         for (const adSet of adSets) {
-          await supabase.from('ad_sets').upsert({
-            adset_id: adSet.id,
-            name: adSet.name,
-            status: adSet.status,
-            optimization_goal: adSet.optimization_goal,
-            campaign_id: adSet.campaign_id,
-            ad_account_id: account.account_id,
-          }, { onConflict: 'adset_id' });
+          await supabase.from('ad_sets').upsert(
+            {
+              adset_id: adSet.id,
+              name: adSet.name,
+              status: adSet.status,
+              optimization_goal: adSet.optimization_goal,
+              campaign_id: adSet.campaign_id,
+              ad_account_id: account.account_id,
+            },
+            { onConflict: 'adset_id' },
+          );
         }
 
         // Sync ads
         const ads = await this.metaService.getAds(account.account_id);
         for (const ad of ads) {
-          await supabase.from('ads').upsert({
-            ad_id: ad.id,
-            name: ad.name,
-            status: ad.status,
-            adset_id: ad.adset_id,
-            campaign_id: ad.campaign_id,
-            ad_account_id: account.account_id,
-          }, { onConflict: 'ad_id' });
+          await supabase.from('ads').upsert(
+            {
+              ad_id: ad.id,
+              name: ad.name,
+              status: ad.status,
+              adset_id: ad.adset_id,
+              campaign_id: ad.campaign_id,
+              ad_account_id: account.account_id,
+            },
+            { onConflict: 'ad_id' },
+          );
         }
       }
 

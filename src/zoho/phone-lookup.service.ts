@@ -24,18 +24,18 @@ export class PhoneLookupService {
     if (!phone) return '';
 
     let normalized = phone.trim();
-    
+
     // Remove all non-digit characters except leading +
     normalized = normalized.replace(/[^\d+]/g, '');
-    
+
     // Remove leading +
     normalized = normalized.replace(/^\+/, '');
-    
+
     // Handle Turkish numbers starting with 0
     if (normalized.startsWith('0') && normalized.length === 11) {
       normalized = '90' + normalized.slice(1);
     }
-    
+
     // Handle numbers without country code (assume TR)
     if (normalized.length === 10 && !normalized.startsWith('90')) {
       normalized = '90' + normalized;
@@ -48,10 +48,7 @@ export class PhoneLookupService {
     const normalized = this.normalizePhone(phone);
     if (!normalized) return [];
 
-    const variants: string[] = [
-      normalized,
-      phone.trim(),
-    ];
+    const variants: string[] = [normalized, phone.trim()];
 
     // Add variant with + prefix
     variants.push('+' + normalized);
@@ -68,7 +65,7 @@ export class PhoneLookupService {
       const part1 = normalized.slice(5, 8);
       const part2 = normalized.slice(8, 10);
       const part3 = normalized.slice(10, 12);
-      
+
       variants.push(`+90 ${areaCode} ${part1} ${part2} ${part3}`);
       variants.push(`0${areaCode} ${part1} ${part2} ${part3}`);
       variants.push(`${areaCode}${part1}${part2}${part3}`);
@@ -82,15 +79,19 @@ export class PhoneLookupService {
     const normalized = this.normalizePhone(phone);
     const variants = this.generatePhoneVariants(phone);
 
-    this.logger.debug(`Searching for phone: ${phone}, normalized: ${normalized}`);
+    this.logger.debug(
+      `Searching for phone: ${phone}, normalized: ${normalized}`,
+    );
     this.logger.debug(`Phone variants: ${variants.join(', ')}`);
 
     // Search in lead_field_data for phone fields
     const { data: fieldMatches, error: fieldError } = await supabase
       .from('lead_field_data')
       .select('lead_id')
-      .or(`mapped_field_name.eq.phone,field_name.ilike.%phone%,field_name.ilike.%tel%,field_name.ilike.%mobile%`)
-      .or(variants.map(v => `field_value.ilike.%${v}%`).join(','));
+      .or(
+        `mapped_field_name.eq.phone,field_name.ilike.%phone%,field_name.ilike.%tel%,field_name.ilike.%mobile%`,
+      )
+      .or(variants.map((v) => `field_value.ilike.%${v}%`).join(','));
 
     if (fieldError) {
       this.logger.error('Error searching lead_field_data', fieldError);
@@ -102,13 +103,14 @@ export class PhoneLookupService {
       return null;
     }
 
-    const leadIds = [...new Set(fieldMatches.map(f => f.lead_id))];
+    const leadIds = [...new Set(fieldMatches.map((f) => f.lead_id))];
     this.logger.debug(`Found ${leadIds.length} potential lead matches`);
 
     // Get lead details
     const { data: leads, error: leadError } = await supabase
       .from('leads')
-      .select(`
+      .select(
+        `
         id,
         lead_id,
         campaign_id,
@@ -117,7 +119,8 @@ export class PhoneLookupService {
         form_name,
         created_at,
         campaigns (id, name)
-      `)
+      `,
+      )
       .in('id', leadIds)
       .order('created_at', { ascending: false })
       .limit(1);
@@ -143,9 +146,11 @@ export class PhoneLookupService {
     };
   }
 
-  async findLeadsByPhoneBatch(phones: string[]): Promise<Map<string, MatchedLead>> {
+  async findLeadsByPhoneBatch(
+    phones: string[],
+  ): Promise<Map<string, MatchedLead>> {
     const results = new Map<string, MatchedLead>();
-    
+
     for (const phone of phones) {
       const match = await this.findLeadByPhone(phone);
       if (match) {
@@ -167,17 +172,24 @@ export class PhoneLookupService {
 
     if (!normalized) return null;
 
-    this.logger.debug(`Searching for email: ${email}, normalized: ${normalized}`);
+    this.logger.debug(
+      `Searching for email: ${email}, normalized: ${normalized}`,
+    );
 
     // Search in lead_field_data for email fields
     const { data: fieldMatches, error: fieldError } = await supabase
       .from('lead_field_data')
       .select('lead_id')
-      .or(`mapped_field_name.eq.email,field_name.ilike.%email%,field_name.ilike.%mail%`)
+      .or(
+        `mapped_field_name.eq.email,field_name.ilike.%email%,field_name.ilike.%mail%`,
+      )
       .ilike('field_value', normalized);
 
     if (fieldError) {
-      this.logger.error('Error searching lead_field_data for email', fieldError);
+      this.logger.error(
+        'Error searching lead_field_data for email',
+        fieldError,
+      );
       return null;
     }
 
@@ -186,13 +198,16 @@ export class PhoneLookupService {
       return null;
     }
 
-    const leadIds = [...new Set(fieldMatches.map(f => f.lead_id))];
-    this.logger.debug(`Found ${leadIds.length} potential lead matches for email`);
+    const leadIds = [...new Set(fieldMatches.map((f) => f.lead_id))];
+    this.logger.debug(
+      `Found ${leadIds.length} potential lead matches for email`,
+    );
 
     // Get lead details
     const { data: leads, error: leadError } = await supabase
       .from('leads')
-      .select(`
+      .select(
+        `
         id,
         lead_id,
         campaign_id,
@@ -201,7 +216,8 @@ export class PhoneLookupService {
         form_name,
         created_at,
         campaigns (id, name)
-      `)
+      `,
+      )
       .in('id', leadIds)
       .order('created_at', { ascending: false })
       .limit(1);
@@ -227,7 +243,10 @@ export class PhoneLookupService {
     };
   }
 
-  async findLeadByPhoneOrEmail(phone?: string, email?: string): Promise<MatchedLead | null> {
+  async findLeadByPhoneOrEmail(
+    phone?: string,
+    email?: string,
+  ): Promise<MatchedLead | null> {
     // Try phone first
     if (phone) {
       const phoneMatch = await this.findLeadByPhone(phone);

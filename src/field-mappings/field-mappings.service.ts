@@ -1,6 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../common/supabase.service';
-import { CreateFieldMappingDto, UpdateFieldMappingDto, FieldMapping, UnmappedField } from './dto/field-mapping.dto';
+import {
+  CreateFieldMappingDto,
+  UpdateFieldMappingDto,
+  FieldMapping,
+  UnmappedField,
+} from './dto/field-mapping.dto';
 
 @Injectable()
 export class FieldMappingsService {
@@ -14,8 +19,8 @@ export class FieldMappingsService {
     return name
       .toLowerCase()
       .replace(/[\s_\-]+/g, '')
-      .replace(/[''`´]/g, "'")  // Normalize quote characters
-      .replace(/[""]/g, '"');   // Normalize double quote characters
+      .replace(/[''`´]/g, "'") // Normalize quote characters
+      .replace(/[""]/g, '"'); // Normalize double quote characters
   }
 
   async loadCache(): Promise<void> {
@@ -25,8 +30,15 @@ export class FieldMappingsService {
       .select('raw_field_name, mapped_field');
 
     if (error) {
-      if (error.code === '42P01' || error.code === 'PGRST205' || error.message.includes('does not exist') || error.message.includes('field_mappings')) {
-        this.logger.warn('field_mappings table does not exist yet - cache empty');
+      if (
+        error.code === '42P01' ||
+        error.code === 'PGRST205' ||
+        error.message.includes('does not exist') ||
+        error.message.includes('field_mappings')
+      ) {
+        this.logger.warn(
+          'field_mappings table does not exist yet - cache empty',
+        );
         this.cacheLoaded = true;
         return;
       }
@@ -40,7 +52,9 @@ export class FieldMappingsService {
       this.mappingCache.set(normalized, mapping.mapped_field);
     }
     this.cacheLoaded = true;
-    this.logger.log(`Loaded ${this.mappingCache.size} field mappings into cache`);
+    this.logger.log(
+      `Loaded ${this.mappingCache.size} field mappings into cache`,
+    );
   }
 
   async getMappedFieldName(rawFieldName: string): Promise<string | null> {
@@ -60,7 +74,12 @@ export class FieldMappingsService {
       .order('mapped_field', { ascending: true });
 
     if (error) {
-      if (error.code === '42P01' || error.code === 'PGRST205' || error.message.includes('does not exist') || error.message.includes('field_mappings')) {
+      if (
+        error.code === '42P01' ||
+        error.code === 'PGRST205' ||
+        error.message.includes('does not exist') ||
+        error.message.includes('field_mappings')
+      ) {
         this.logger.warn('field_mappings table does not exist yet');
         return [];
       }
@@ -114,12 +133,15 @@ export class FieldMappingsService {
 
   async update(id: string, dto: UpdateFieldMappingDto): Promise<FieldMapping> {
     const supabase = this.supabaseService.getClient();
-    
+
     const updateData: Record<string, unknown> = {};
-    if (dto.rawFieldName !== undefined) updateData.raw_field_name = dto.rawFieldName;
-    if (dto.mappedField !== undefined) updateData.mapped_field = dto.mappedField;
+    if (dto.rawFieldName !== undefined)
+      updateData.raw_field_name = dto.rawFieldName;
+    if (dto.mappedField !== undefined)
+      updateData.mapped_field = dto.mappedField;
     if (dto.language !== undefined) updateData.language = dto.language;
-    if (dto.autoDetected !== undefined) updateData.auto_detected = dto.autoDetected;
+    if (dto.autoDetected !== undefined)
+      updateData.auto_detected = dto.autoDetected;
 
     const { data, error } = await supabase
       .from('field_mappings')
@@ -175,7 +197,12 @@ export class FieldMappingsService {
       .select('raw_field_name');
 
     if (mappingError) {
-      if (mappingError.code === '42P01' || mappingError.code === 'PGRST205' || mappingError.message.includes('does not exist') || mappingError.message.includes('field_mappings')) {
+      if (
+        mappingError.code === '42P01' ||
+        mappingError.code === 'PGRST205' ||
+        mappingError.message.includes('does not exist') ||
+        mappingError.message.includes('field_mappings')
+      ) {
         this.logger.warn('field_mappings table does not exist yet');
       } else {
         this.logger.error(`Failed to get mappings: ${mappingError.message}`);
@@ -183,11 +210,12 @@ export class FieldMappingsService {
     }
 
     const mappedNormalized = new Set(
-      (mappings || []).map(m => this.normalizeFieldName(m.raw_field_name))
+      (mappings || []).map((m) => this.normalizeFieldName(m.raw_field_name)),
     );
 
     // Group by field name and find unmapped
-    const fieldGroups: Record<string, { count: number; values: Set<string> }> = {};
+    const fieldGroups: Record<string, { count: number; values: Set<string> }> =
+      {};
 
     for (const field of fieldData || []) {
       const normalized = this.normalizeFieldName(field.field_name);

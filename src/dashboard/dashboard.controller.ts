@@ -12,6 +12,11 @@ export class DashboardController {
     @Query('accountId') accountId?: string,
     @Query('objective') objective?: string,
   ) {
-    return this.dashboardService.getStats(startDate, endDate, accountId, objective);
+    return this.dashboardService.getStats(
+      startDate,
+      endDate,
+      accountId,
+      objective,
+    );
   }
 }

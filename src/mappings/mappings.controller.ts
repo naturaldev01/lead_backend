@@ -1,4 +1,12 @@
-import { Controller, Get, Post, Patch, Delete, Param, Body } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Patch,
+  Delete,
+  Param,
+  Body,
+} from '@nestjs/common';
 import { MappingsService } from './mappings.service';
 import { CreateMappingDto, UpdateMappingDto } from './dto/mapping.dto';
 

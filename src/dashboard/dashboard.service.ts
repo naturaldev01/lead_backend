@@ -51,7 +51,9 @@ export class DashboardService {
       .limit(2);
 
     const spendSync = (syncLogs || []).find((s) => s.type === 'spend');
-    const leadsSync = (syncLogs || []).find((s) => s.type === 'leads' || s.type === 'spend');
+    const leadsSync = (syncLogs || []).find(
+      (s) => s.type === 'leads' || s.type === 'spend',
+    );
 
     return {
       totalSpend,

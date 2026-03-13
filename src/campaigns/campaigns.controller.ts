@@ -12,7 +12,12 @@ export class CampaignsController {
     @Query('accountId') accountId?: string,
     @Query('search') search?: string,
   ) {
-    return this.campaignsService.getCampaigns(startDate, endDate, accountId, search);
+    return this.campaignsService.getCampaigns(
+      startDate,
+      endDate,
+      accountId,
+      search,
+    );
   }
 
   @Get('hierarchy')
@@ -24,7 +29,14 @@ export class CampaignsController {
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,
   ) {
-    return this.campaignsService.getHierarchy(accountId, search, country, level, startDate, endDate);
+    return this.campaignsService.getHierarchy(
+      accountId,
+      search,
+      country,
+      level,
+      startDate,
+      endDate,
+    );
   }
 
   @Get('countries')

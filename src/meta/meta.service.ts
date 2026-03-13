@@ -11,11 +11,20 @@ export class MetaService {
   private syncLookbackDays: number;
 
   constructor(private configService: ConfigService) {
-    const apiVersion = this.configService.get<string>('META_API_VERSION') || 'v18.0';
+    const apiVersion =
+      this.configService.get<string>('META_API_VERSION') || 'v18.0';
     this.baseUrl = `https://graph.facebook.com/${apiVersion}`;
-    this.accessToken = this.configService.get<string>('META_ACCESS_TOKEN') || '';
-    this.allowedAdAccounts = (this.configService.get<string>('META_ALLOWED_AD_ACCOUNTS') || '').split(',').filter(Boolean);
-    this.syncLookbackDays = parseInt(this.configService.get<string>('META_SYNC_LOOKBACK_DAYS') || '90', 10);
+    this.accessToken =
+      this.configService.get<string>('META_ACCESS_TOKEN') || '';
+    this.allowedAdAccounts = (
+      this.configService.get<string>('META_ALLOWED_AD_ACCOUNTS') || ''
+    )
+      .split(',')
+      .filter(Boolean);
+    this.syncLookbackDays = parseInt(
+      this.configService.get<string>('META_SYNC_LOOKBACK_DAYS') || '90',
+      10,
+    );
   }
 
   getAllowedAdAccounts(): string[] {
@@ -43,69 +52,87 @@ export class MetaService {
 
   async getCampaigns(adAccountId: string): Promise<any[]> {
     const allCampaigns: any[] = [];
-    let nextUrl: string | null = `${this.baseUrl}/act_${adAccountId}/campaigns?access_token=${this.accessToken}&fields=id,name,objective,status,created_time&limit=500`;
-    
+    let nextUrl: string | null =
+      `${this.baseUrl}/act_${adAccountId}/campaigns?access_token=${this.accessToken}&fields=id,name,objective,status,created_time&limit=500`;
+
     try {
       while (nextUrl) {
         const response = await axios.get(nextUrl);
         const data = response.data.data || [];
         allCampaigns.push(...data);
         nextUrl = response.data.paging?.next || null;
-        
+
         if (allCampaigns.length >= 100000) {
-          this.logger.warn(`Reached 100000 campaigns limit for account ${adAccountId}`);
+          this.logger.warn(
+            `Reached 100000 campaigns limit for account ${adAccountId}`,
+          );
           break;
         }
       }
       return allCampaigns;
     } catch (error) {
-      this.logger.error(`Failed to fetch campaigns for account ${adAccountId}`, error);
+      this.logger.error(
+        `Failed to fetch campaigns for account ${adAccountId}`,
+        error,
+      );
       throw error;
     }
   }
 
   async getAdSets(adAccountId: string): Promise<any[]> {
     const allAdSets: any[] = [];
-    let nextUrl: string | null = `${this.baseUrl}/act_${adAccountId}/adsets?access_token=${this.accessToken}&fields=id,name,campaign_id,status,targeting,optimization_goal&limit=500`;
-    
+    let nextUrl: string | null =
+      `${this.baseUrl}/act_${adAccountId}/adsets?access_token=${this.accessToken}&fields=id,name,campaign_id,status,targeting,optimization_goal&limit=500`;
+
     try {
       while (nextUrl) {
         const response = await axios.get(nextUrl);
         const data = response.data.data || [];
         allAdSets.push(...data);
         nextUrl = response.data.paging?.next || null;
-        
+
         if (allAdSets.length >= 100000) {
-          this.logger.warn(`Reached 100000 ad sets limit for account ${adAccountId}`);
+          this.logger.warn(
+            `Reached 100000 ad sets limit for account ${adAccountId}`,
+          );
           break;
         }
       }
       return allAdSets;
     } catch (error) {
-      this.logger.error(`Failed to fetch ad sets for account ${adAccountId}`, error);
+      this.logger.error(
+        `Failed to fetch ad sets for account ${adAccountId}`,
+        error,
+      );
       throw error;
     }
   }
 
   async getAds(adAccountId: string): Promise<any[]> {
     const allAds: any[] = [];
-    let nextUrl: string | null = `${this.baseUrl}/act_${adAccountId}/ads?access_token=${this.accessToken}&fields=id,name,adset_id,campaign_id,status,creative&limit=500`;
-    
+    let nextUrl: string | null =
+      `${this.baseUrl}/act_${adAccountId}/ads?access_token=${this.accessToken}&fields=id,name,adset_id,campaign_id,status,creative&limit=500`;
+
     try {
       while (nextUrl) {
         const response = await axios.get(nextUrl);
         const data = response.data.data || [];
         allAds.push(...data);
         nextUrl = response.data.paging?.next || null;
-        
+
         if (allAds.length >= 100000) {
-          this.logger.warn(`Reached 100000 ads limit for account ${adAccountId}`);
+          this.logger.warn(
+            `Reached 100000 ads limit for account ${adAccountId}`,
+          );
           break;
         }
       }
       return allAds;
     } catch (error) {
-      this.logger.error(`Failed to fetch ads for account ${adAccountId}`, error);
+      this.logger.error(
+        `Failed to fetch ads for account ${adAccountId}`,
+        error,
+      );
       throw error;
     }
   }
@@ -132,8 +159,9 @@ export class MetaService {
     endDate: string,
   ): Promise<any[]> {
     const allInsights: any[] = [];
-    let nextUrl: string | null = `${this.baseUrl}/act_${adAccountId}/insights?access_token=${this.accessToken}&level=${level}&fields=${fields}&time_range=${JSON.stringify({ since: startDate, until: endDate })}&limit=500`;
-    
+    let nextUrl: string | null =
+      `${this.baseUrl}/act_${adAccountId}/insights?access_token=${this.accessToken}&level=${level}&fields=${fields}&time_range=${JSON.stringify({ since: startDate, until: endDate })}&limit=500`;
+
     let retries = 0;
     const maxRetries = 3;
 
@@ -144,32 +172,39 @@ export class MetaService {
         allInsights.push(...data);
         nextUrl = response.data.paging?.next || null;
         retries = 0; // Reset retries on success
-        
+
         // Small delay between pages
         if (nextUrl) {
           await this.sleep(300);
         }
-        
+
         if (allInsights.length >= 100000) {
-          this.logger.warn(`Reached 100000 ${level} insights limit for account ${adAccountId}`);
+          this.logger.warn(
+            `Reached 100000 ${level} insights limit for account ${adAccountId}`,
+          );
           break;
         }
       } catch (error: any) {
         const errorCode = error.response?.data?.error?.code;
         const isRateLimit = errorCode === 4 || errorCode === 17;
-        
+
         if (isRateLimit && retries < maxRetries) {
           retries++;
           const waitTime = Math.pow(2, retries) * 30000;
-          this.logger.warn(`Rate limit for ${level} insights, waiting ${waitTime / 1000}s (retry ${retries}/${maxRetries})`);
+          this.logger.warn(
+            `Rate limit for ${level} insights, waiting ${waitTime / 1000}s (retry ${retries}/${maxRetries})`,
+          );
           await this.sleep(waitTime);
         } else {
-          this.logger.error(`Failed to fetch ${level} insights for account ${adAccountId}`, error);
+          this.logger.error(
+            `Failed to fetch ${level} insights for account ${adAccountId}`,
+            error,
+          );
           throw error;
         }
       }
     }
-    
+
     return allInsights;
   }
 
@@ -209,46 +244,53 @@ export class MetaService {
   ): Promise<any[]> {
     const allInsights: any[] = [];
     const fieldsMap = {
-      campaign: 'campaign_id,campaign_name,spend,actions,impressions,clicks,date_start',
-      adset: 'campaign_id,adset_id,adset_name,spend,actions,impressions,clicks,date_start',
+      campaign:
+        'campaign_id,campaign_name,spend,actions,impressions,clicks,date_start',
+      adset:
+        'campaign_id,adset_id,adset_name,spend,actions,impressions,clicks,date_start',
       ad: 'campaign_id,adset_id,ad_id,ad_name,spend,actions,impressions,clicks,date_start',
     };
 
     // Split date range into 15-day batches for more reliable API calls
     const batches = this.splitDateRange(startDate, endDate, 15);
-    this.logger.log(`Splitting ${startDate} to ${endDate} into ${batches.length} batches (15-day each) for daily insights`);
+    this.logger.log(
+      `Splitting ${startDate} to ${endDate} into ${batches.length} batches (15-day each) for daily insights`,
+    );
 
     for (let i = 0; i < batches.length; i++) {
       const batch = batches[i];
-      
+
       // Add delay between batches to avoid rate limiting (3 seconds)
       if (i > 0) {
         await this.sleep(3000);
       }
-      
+
       let retries = 0;
       const maxRetries = 5;
       let batchInsights: any[] = [];
-      
+
       while (retries < maxRetries) {
         try {
           batchInsights = [];
-          let nextUrl: string | null = `${this.baseUrl}/act_${adAccountId}/insights?access_token=${this.accessToken}&level=${level}&fields=${fieldsMap[level]}&time_range=${JSON.stringify({ since: batch.start, until: batch.end })}&time_increment=1&limit=200`;
-          
+          let nextUrl: string | null =
+            `${this.baseUrl}/act_${adAccountId}/insights?access_token=${this.accessToken}&level=${level}&fields=${fieldsMap[level]}&time_range=${JSON.stringify({ since: batch.start, until: batch.end })}&time_increment=1&limit=200`;
+
           while (nextUrl) {
             const response = await axios.get(nextUrl, { timeout: 180000 });
             const data = response.data.data || [];
             batchInsights.push(...data);
             nextUrl = response.data.paging?.next || null;
-            
+
             // Small delay between pages
             if (nextUrl) {
               await this.sleep(1000);
             }
           }
-          
+
           allInsights.push(...batchInsights);
-          this.logger.log(`Batch ${i + 1}/${batches.length} (${batch.start} to ${batch.end}): fetched ${batchInsights.length} insights (total: ${allInsights.length})`);
+          this.logger.log(
+            `Batch ${i + 1}/${batches.length} (${batch.start} to ${batch.end}): fetched ${batchInsights.length} insights (total: ${allInsights.length})`,
+          );
           break; // Success, exit retry loop
         } catch (error: any) {
           retries++;
@@ -256,30 +298,45 @@ export class MetaService {
           const statusCode = error.response?.status;
           const errorMsg = error.message || '';
           const isRateLimit = errorCode === 4 || errorCode === 17;
-          const isServerError = statusCode >= 500 || error.code === 'ETIMEDOUT' || error.code === 'ECONNRESET';
-          const isTimeout = errorMsg.includes('timeout') || error.code === 'ECONNABORTED';
-          
-          if ((isRateLimit || isServerError || isTimeout) && retries < maxRetries) {
+          const isServerError =
+            statusCode >= 500 ||
+            error.code === 'ETIMEDOUT' ||
+            error.code === 'ECONNRESET';
+          const isTimeout =
+            errorMsg.includes('timeout') || error.code === 'ECONNABORTED';
+
+          if (
+            (isRateLimit || isServerError || isTimeout) &&
+            retries < maxRetries
+          ) {
             const waitTime = Math.pow(2, retries) * 15000; // Exponential backoff: 30s, 60s, 120s, 240s
-            this.logger.warn(`Retriable error for batch ${batch.start} to ${batch.end} (${errorMsg}). Waiting ${waitTime / 1000}s before retry ${retries}/${maxRetries}`);
+            this.logger.warn(
+              `Retriable error for batch ${batch.start} to ${batch.end} (${errorMsg}). Waiting ${waitTime / 1000}s before retry ${retries}/${maxRetries}`,
+            );
             await this.sleep(waitTime);
           } else if (retries >= maxRetries) {
-            this.logger.error(`Failed batch ${batch.start} to ${batch.end} after ${maxRetries} retries: ${errorMsg}`);
+            this.logger.error(
+              `Failed batch ${batch.start} to ${batch.end} after ${maxRetries} retries: ${errorMsg}`,
+            );
             break;
           } else {
-            this.logger.error(`Non-retriable error for batch ${batch.start} to ${batch.end}: ${errorMsg}`);
+            this.logger.error(
+              `Non-retriable error for batch ${batch.start} to ${batch.end}: ${errorMsg}`,
+            );
             break;
           }
         }
       }
     }
-    
-    this.logger.log(`Fetched ${allInsights.length} daily ${level} insights for account ${adAccountId}`);
+
+    this.logger.log(
+      `Fetched ${allInsights.length} daily ${level} insights for account ${adAccountId}`,
+    );
     return allInsights;
   }
 
   private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   async getDailyInsightsSmallBatch(
@@ -290,14 +347,18 @@ export class MetaService {
   ): Promise<any[]> {
     const allInsights: any[] = [];
     const fieldsMap = {
-      campaign: 'campaign_id,campaign_name,spend,actions,impressions,clicks,date_start',
-      adset: 'campaign_id,adset_id,adset_name,spend,actions,impressions,clicks,date_start',
+      campaign:
+        'campaign_id,campaign_name,spend,actions,impressions,clicks,date_start',
+      adset:
+        'campaign_id,adset_id,adset_name,spend,actions,impressions,clicks,date_start',
       ad: 'campaign_id,adset_id,ad_id,ad_name,spend,actions,impressions,clicks,date_start',
     };
 
     // Use 7-day batches for more reliable API calls on problematic date ranges
     const batches = this.splitDateRange(startDate, endDate, 7);
-    this.logger.log(`Small batch sync: ${startDate} to ${endDate} into ${batches.length} batches (7-day each)`);
+    this.logger.log(
+      `Small batch sync: ${startDate} to ${endDate} into ${batches.length} batches (7-day each)`,
+    );
 
     for (let i = 0; i < batches.length; i++) {
       const batch = batches[i];
@@ -313,7 +374,8 @@ export class MetaService {
       while (retries < maxRetries) {
         try {
           batchInsights = [];
-          let nextUrl: string | null = `${this.baseUrl}/act_${adAccountId}/insights?access_token=${this.accessToken}&level=${level}&fields=${fieldsMap[level]}&time_range=${JSON.stringify({ since: batch.start, until: batch.end })}&time_increment=1&limit=100`;
+          let nextUrl: string | null =
+            `${this.baseUrl}/act_${adAccountId}/insights?access_token=${this.accessToken}&level=${level}&fields=${fieldsMap[level]}&time_range=${JSON.stringify({ since: batch.start, until: batch.end })}&time_increment=1&limit=100`;
 
           while (nextUrl) {
             const response = await axios.get(nextUrl, { timeout: 120000 });
@@ -327,67 +389,91 @@ export class MetaService {
           }
 
           allInsights.push(...batchInsights);
-          this.logger.log(`Small batch ${i + 1}/${batches.length} (${batch.start} to ${batch.end}): fetched ${batchInsights.length} insights`);
+          this.logger.log(
+            `Small batch ${i + 1}/${batches.length} (${batch.start} to ${batch.end}): fetched ${batchInsights.length} insights`,
+          );
           break;
         } catch (error: any) {
           retries++;
           const errorMsg = error.message || '';
           const statusCode = error.response?.status;
-          const isRetriable = statusCode >= 500 || statusCode === 400 || errorMsg.includes('timeout') || error.code === 'ETIMEDOUT' || error.code === 'ECONNRESET' || error.code === 'ECONNABORTED';
+          const isRetriable =
+            statusCode >= 500 ||
+            statusCode === 400 ||
+            errorMsg.includes('timeout') ||
+            error.code === 'ETIMEDOUT' ||
+            error.code === 'ECONNRESET' ||
+            error.code === 'ECONNABORTED';
 
           if (isRetriable && retries < maxRetries) {
             const waitTime = Math.pow(2, retries) * 20000; // 40s, 80s, 160s, 320s
-            this.logger.warn(`Retry ${retries}/${maxRetries} for batch ${batch.start} to ${batch.end} (${errorMsg}). Waiting ${waitTime / 1000}s`);
+            this.logger.warn(
+              `Retry ${retries}/${maxRetries} for batch ${batch.start} to ${batch.end} (${errorMsg}). Waiting ${waitTime / 1000}s`,
+            );
             await this.sleep(waitTime);
           } else {
-            this.logger.error(`Failed batch ${batch.start} to ${batch.end} after ${retries} retries: ${errorMsg}`);
+            this.logger.error(
+              `Failed batch ${batch.start} to ${batch.end} after ${retries} retries: ${errorMsg}`,
+            );
             break;
           }
         }
       }
     }
 
-    this.logger.log(`Small batch sync complete: ${allInsights.length} total insights for account ${adAccountId}`);
+    this.logger.log(
+      `Small batch sync complete: ${allInsights.length} total insights for account ${adAccountId}`,
+    );
     return allInsights;
   }
 
-  private splitDateRange(startDate: string, endDate: string, batchDays: number): { start: string; end: string }[] {
+  private splitDateRange(
+    startDate: string,
+    endDate: string,
+    batchDays: number,
+  ): { start: string; end: string }[] {
     const batches: { start: string; end: string }[] = [];
     const start = new Date(startDate);
     const end = new Date(endDate);
-    
+
     let currentStart = new Date(start);
     while (currentStart < end) {
       const currentEnd = new Date(currentStart);
       currentEnd.setDate(currentEnd.getDate() + batchDays - 1);
-      
+
       if (currentEnd > end) {
         currentEnd.setTime(end.getTime());
       }
-      
+
       batches.push({
         start: currentStart.toISOString().split('T')[0],
         end: currentEnd.toISOString().split('T')[0],
       });
-      
+
       currentStart = new Date(currentEnd);
       currentStart.setDate(currentStart.getDate() + 1);
     }
-    
+
     return batches;
   }
 
   async getLeadGenForms(pageId: string): Promise<any[]> {
     try {
-      const response = await axios.get(`${this.baseUrl}/${pageId}/leadgen_forms`, {
-        params: {
-          access_token: this.accessToken,
-          fields: 'id,name,status,leads_count',
+      const response = await axios.get(
+        `${this.baseUrl}/${pageId}/leadgen_forms`,
+        {
+          params: {
+            access_token: this.accessToken,
+            fields: 'id,name,status,leads_count',
+          },
         },
-      });
+      );
       return response.data.data || [];
     } catch (error) {
-      this.logger.error(`Failed to fetch lead gen forms for page ${pageId}`, error);
+      this.logger.error(
+        `Failed to fetch lead gen forms for page ${pageId}`,
+        error,
+      );
       throw error;
     }
   }
@@ -397,7 +483,8 @@ export class MetaService {
       const response = await axios.get(`${this.baseUrl}/${formId}/leads`, {
         params: {
           access_token: this.accessToken,
-          fields: 'id,created_time,field_data,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,form_id,platform',
+          fields:
+            'id,created_time,field_data,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,form_id,platform',
         },
       });
       return response.data.data || [];
@@ -421,7 +508,10 @@ export class MetaService {
       );
       return response.data.success;
     } catch (error) {
-      this.logger.error(`Failed to subscribe to webhook for account ${adAccountId}`, error);
+      this.logger.error(
+        `Failed to subscribe to webhook for account ${adAccountId}`,
+        error,
+      );
       throw error;
     }
   }
@@ -438,7 +528,10 @@ export class MetaService {
       );
       return response.data.data || [];
     } catch (error) {
-      this.logger.error(`Failed to get subscription status for account ${adAccountId}`, error);
+      this.logger.error(
+        `Failed to get subscription status for account ${adAccountId}`,
+        error,
+      );
       throw error;
     }
   }
@@ -458,27 +551,41 @@ export class MetaService {
     }
   }
 
-  async getLeadGenFormsWithPageToken(pageId: string, pageAccessToken: string): Promise<any[]> {
+  async getLeadGenFormsWithPageToken(
+    pageId: string,
+    pageAccessToken: string,
+  ): Promise<any[]> {
     try {
-      const response = await axios.get(`${this.baseUrl}/${pageId}/leadgen_forms`, {
-        params: {
-          access_token: pageAccessToken,
-          fields: 'id,name,status,leads_count',
+      const response = await axios.get(
+        `${this.baseUrl}/${pageId}/leadgen_forms`,
+        {
+          params: {
+            access_token: pageAccessToken,
+            fields: 'id,name,status,leads_count',
+          },
         },
-      });
+      );
       return response.data.data || [];
     } catch (error) {
-      this.logger.error(`Failed to fetch lead gen forms for page ${pageId}`, error);
+      this.logger.error(
+        `Failed to fetch lead gen forms for page ${pageId}`,
+        error,
+      );
       return [];
     }
   }
 
-  async getLeadsWithPageToken(formId: string, pageAccessToken: string, limit = 100): Promise<any[]> {
+  async getLeadsWithPageToken(
+    formId: string,
+    pageAccessToken: string,
+    limit = 100,
+  ): Promise<any[]> {
     try {
       const response = await axios.get(`${this.baseUrl}/${formId}/leads`, {
         params: {
           access_token: pageAccessToken,
-          fields: 'id,created_time,field_data,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,form_id',
+          fields:
+            'id,created_time,field_data,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,form_id',
           limit,
         },
       });
@@ -489,9 +596,13 @@ export class MetaService {
     }
   }
 
-  async getAllLeadsWithPageToken(formId: string, pageAccessToken: string): Promise<any[]> {
+  async getAllLeadsWithPageToken(
+    formId: string,
+    pageAccessToken: string,
+  ): Promise<any[]> {
     const allLeads: any[] = [];
-    let nextUrl: string | null = `${this.baseUrl}/${formId}/leads?access_token=${pageAccessToken}&fields=id,created_time,field_data,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,form_id&limit=500`;
+    let nextUrl: string | null =
+      `${this.baseUrl}/${formId}/leads?access_token=${pageAccessToken}&fields=id,created_time,field_data,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,form_id&limit=500`;
     let pageCount = 0;
 
     try {
@@ -500,22 +611,28 @@ export class MetaService {
         const response = await axios.get(nextUrl);
         const data = response.data.data || [];
         allLeads.push(...data);
-        
+
         nextUrl = response.data.paging?.next || null;
-        
+
         // Log progress every 10 pages
         if (pageCount % 10 === 0) {
-          this.logger.log(`Form ${formId}: Fetched ${allLeads.length} leads (page ${pageCount})`);
+          this.logger.log(
+            `Form ${formId}: Fetched ${allLeads.length} leads (page ${pageCount})`,
+          );
         }
-        
+
         // Safety limit at 100,000 to prevent infinite loops
         if (allLeads.length >= 100000) {
-          this.logger.warn(`Reached 100000 leads limit for form ${formId}, stopping pagination`);
+          this.logger.warn(
+            `Reached 100000 leads limit for form ${formId}, stopping pagination`,
+          );
           break;
         }
       }
-      
-      this.logger.log(`Fetched total ${allLeads.length} leads from form ${formId}`);
+
+      this.logger.log(
+        `Fetched total ${allLeads.length} leads from form ${formId}`,
+      );
       return allLeads;
     } catch (error) {
       this.logger.error(`Failed to fetch all leads for form ${formId}`, error);
@@ -524,13 +641,14 @@ export class MetaService {
   }
 
   async getLeadsWithFiltering(
-    formId: string, 
-    pageAccessToken: string, 
-    fromDate?: Date
+    formId: string,
+    pageAccessToken: string,
+    fromDate?: Date,
   ): Promise<any[]> {
     const allLeads: any[] = [];
-    let nextUrl: string | null = `${this.baseUrl}/${formId}/leads?access_token=${pageAccessToken}&fields=id,created_time,field_data,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,form_id&limit=500`;
-    
+    let nextUrl: string | null =
+      `${this.baseUrl}/${formId}/leads?access_token=${pageAccessToken}&fields=id,created_time,field_data,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,form_id&limit=500`;
+
     // If fromDate specified, add filtering parameter
     if (fromDate) {
       const fromTimestamp = Math.floor(fromDate.getTime() / 1000);
@@ -542,18 +660,21 @@ export class MetaService {
         const response = await axios.get(nextUrl);
         const data = response.data.data || [];
         allLeads.push(...data);
-        
+
         nextUrl = response.data.paging?.next || null;
-        
+
         if (allLeads.length >= 100000) {
           this.logger.warn(`Reached 100000 leads limit for form ${formId}`);
           break;
         }
       }
-      
+
       return allLeads;
     } catch (error) {
-      this.logger.error(`Failed to fetch filtered leads for form ${formId}`, error);
+      this.logger.error(
+        `Failed to fetch filtered leads for form ${formId}`,
+        error,
+      );
       return allLeads;
     }
   }

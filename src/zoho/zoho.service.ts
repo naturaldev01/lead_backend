@@ -29,7 +29,9 @@ export class ZohoService {
 
     // Check if at least phone or email is provided
     if (!payload.phone && !payload.email) {
-      this.logger.warn(`Zoho webhook received without phone or email: ${payload.event_name}`);
+      this.logger.warn(
+        `Zoho webhook received without phone or email: ${payload.event_name}`,
+      );
       return {
         success: false,
         matched: false,
@@ -37,14 +39,28 @@ export class ZohoService {
       };
     }
 
-    const normalizedPhone = payload.phone ? this.phoneLookupService.normalizePhone(payload.phone) : undefined;
-    const normalizedEmail = payload.email ? this.phoneLookupService.normalizeEmail(payload.email) : undefined;
+    const normalizedPhone = payload.phone
+      ? this.phoneLookupService.normalizePhone(payload.phone)
+      : undefined;
+    const normalizedEmail = payload.email
+      ? this.phoneLookupService.normalizeEmail(payload.email)
+      : undefined;
 
-    this.logger.log(`Processing Zoho event: ${payload.event_name} for phone: ${payload.phone || 'N/A'}, email: ${payload.email || 'N/A'}`);
+    this.logger.log(
+      `Processing Zoho event: ${payload.event_name} for phone: ${payload.phone || 'N/A'}, email: ${payload.email || 'N/A'}`,
+    );
 
     // Find matching lead by phone first, then email
-    const matchedLead = await this.phoneLookupService.findLeadByPhoneOrEmail(payload.phone, payload.email);
-    const matchedBy = matchedLead ? (payload.phone && await this.phoneLookupService.findLeadByPhone(payload.phone) ? 'phone' : 'email') : undefined;
+    const matchedLead = await this.phoneLookupService.findLeadByPhoneOrEmail(
+      payload.phone,
+      payload.email,
+    );
+    const matchedBy = matchedLead
+      ? payload.phone &&
+        (await this.phoneLookupService.findLeadByPhone(payload.phone))
+        ? 'phone'
+        : 'email'
+      : undefined;
 
     // Save the event
     const eventRecord: ZohoEventRecord = {
@@ -93,7 +109,8 @@ export class ZohoService {
     return {
       success: true,
       matched: false,
-      message: 'No matching lead found in Meta ads data pool. This contact may not have originated from a Meta ad campaign.',
+      message:
+        'No matching lead found in Meta ads data pool. This contact may not have originated from a Meta ad campaign.',
       searchedBy: {
         ...(payload.phone && { phone: payload.phone }),
         ...(payload.email && { email: payload.email }),
@@ -123,11 +140,19 @@ export class ZohoService {
     if (existing) {
       // Update existing record
       const updateData: Partial<LeadAttributionRecord> = {
-        funnel_stage: this.getHigherFunnelStage(existing.funnel_stage, funnelStage),
+        funnel_stage: this.getHigherFunnelStage(
+          existing.funnel_stage,
+          funnelStage,
+        ),
       };
 
       if (dateField) {
         (updateData as any)[dateField] = today;
+      }
+
+      if (eventType.includes('offer') && amount) {
+        updateData.offer_amount = amount;
+        updateData.currency = 'EUR';
       }
 
       if (eventType.includes('deal') && amount) {
@@ -138,9 +163,12 @@ export class ZohoService {
       if (eventType.includes('payment') && amount) {
         updateData.payment_amount = amount;
         updateData.currency = 'EUR';
-        
+
         // Calculate ROAS if we have spend
-        if (existing.attributed_spend_usd && existing.attributed_spend_usd > 0) {
+        if (
+          existing.attributed_spend_usd &&
+          existing.attributed_spend_usd > 0
+        ) {
           updateData.roas = amount / existing.attributed_spend_usd;
         }
       }
@@ -175,6 +203,10 @@ export class ZohoService {
 
       if (dateField) {
         (newAttribution as any)[dateField] = today;
+      }
+
+      if (eventType.includes('offer') && amount) {
+        newAttribution.offer_amount = amount;
       }
 
       if (eventType.includes('deal') && amount) {
@@ -229,8 +261,14 @@ export class ZohoService {
     }
 
     // Sum up spend and leads for the day
-    const totalSpend = insights.reduce((sum, i) => sum + (parseFloat(i.spend_usd) || 0), 0);
-    const totalLeads = insights.reduce((sum, i) => sum + (i.leads_count || 0), 0);
+    const totalSpend = insights.reduce(
+      (sum, i) => sum + (parseFloat(i.spend_usd) || 0),
+      0,
+    );
+    const totalLeads = insights.reduce(
+      (sum, i) => sum + (i.leads_count || 0),
+      0,
+    );
 
     if (totalLeads > 0) {
       return totalSpend / totalLeads;
@@ -319,6 +357,7 @@ export class ZohoService {
           deal: attribution.deal_date,
           payment: attribution.payment_date,
         },
+        offerAmount: attribution.offer_amount,
         dealAmount: attribution.deal_amount,
         paymentAmount: attribution.payment_amount,
       };
@@ -336,7 +375,8 @@ export class ZohoService {
 
     const { data, error } = await supabase
       .from('lead_attribution')
-      .select(`
+      .select(
+        `
         *,
         leads (
           lead_id,
@@ -346,7 +386,8 @@ export class ZohoService {
           created_at,
           campaigns (name)
         )
-      `)
+      `,
+      )
       .eq('lead_id', leadId)
       .single();
 
@@ -410,11 +451,11 @@ export class ZohoService {
     for (const attr of attributions) {
       byStage[attr.funnel_stage] = (byStage[attr.funnel_stage] || 0) + 1;
       totalSpend += parseFloat(attr.attributed_spend_usd) || 0;
-      
+
       if (attr.payment_amount) {
         totalRevenue += parseFloat(attr.payment_amount) || 0;
       }
-      
+
       if (attr.roas) {
         roasSum += parseFloat(attr.roas);
         roasCount++;
@@ -423,15 +464,20 @@ export class ZohoService {
 
     const total = attributions.length;
     const conversionRates: Record<string, number> = {};
-    
+
     if (total > 0) {
-      conversionRates['lead_to_contact'] = (byStage.contact + byStage.offer + byStage.deal + byStage.payment) / total;
-      conversionRates['contact_to_deal'] = byStage.contact > 0 
-        ? (byStage.deal + byStage.payment) / (byStage.contact + byStage.offer + byStage.deal + byStage.payment)
-        : 0;
-      conversionRates['deal_to_payment'] = byStage.deal > 0
-        ? byStage.payment / (byStage.deal + byStage.payment)
-        : 0;
+      conversionRates['lead_to_contact'] =
+        (byStage.contact + byStage.offer + byStage.deal + byStage.payment) /
+        total;
+      conversionRates['contact_to_deal'] =
+        byStage.contact > 0
+          ? (byStage.deal + byStage.payment) /
+            (byStage.contact + byStage.offer + byStage.deal + byStage.payment)
+          : 0;
+      conversionRates['deal_to_payment'] =
+        byStage.deal > 0
+          ? byStage.payment / (byStage.deal + byStage.payment)
+          : 0;
     }
 
     return {
@@ -450,6 +496,14 @@ export class ZohoService {
     endDate?: string,
     page: number = 1,
     limit: number = 25,
+    offerFilter: 'all' | 'with_offer' | 'without_offer' = 'all',
+    sortBy:
+      | 'created_at'
+      | 'offer_amount'
+      | 'deal_amount'
+      | 'payment_amount'
+      | 'roas' = 'created_at',
+    sortDirection: 'asc' | 'desc' = 'desc',
   ): Promise<{
     data: any[];
     total: number;
@@ -462,7 +516,8 @@ export class ZohoService {
 
     let query = supabase
       .from('lead_attribution')
-      .select(`
+      .select(
+        `
         *,
         leads (
           lead_id,
@@ -472,8 +527,19 @@ export class ZohoService {
           campaign_id,
           created_at
         )
-      `, { count: 'exact' })
-      .order('created_at', { ascending: false })
+      `,
+        { count: 'exact' },
+      )
+      .order(sortBy, {
+        ascending: sortDirection === 'asc',
+        nullsFirst:
+          sortBy === 'offer_amount' ||
+          sortBy === 'deal_amount' ||
+          sortBy === 'payment_amount' ||
+          sortBy === 'roas'
+            ? false
+            : undefined,
+      })
       .range(offset, offset + limit - 1);
 
     if (startDate) {
@@ -481,6 +547,14 @@ export class ZohoService {
     }
     if (endDate) {
       query = query.lte('lead_date', endDate);
+    }
+
+    if (offerFilter === 'with_offer') {
+      query = query.not('offer_amount', 'is', null);
+    }
+
+    if (offerFilter === 'without_offer') {
+      query = query.is('offer_amount', null);
     }
 
     const { data, error, count } = await query;
@@ -491,7 +565,9 @@ export class ZohoService {
     }
 
     // Get campaign names for each attribution
-    const campaignIds = [...new Set((data || []).map(d => d.campaign_id).filter(Boolean))];
+    const campaignIds = [
+      ...new Set((data || []).map((d) => d.campaign_id).filter(Boolean)),
+    ];
     let campaignMap: Record<string, string> = {};
 
     if (campaignIds.length > 0) {
@@ -501,14 +577,17 @@ export class ZohoService {
         .in('campaign_id', campaignIds);
 
       if (campaigns) {
-        campaignMap = campaigns.reduce((acc, c) => {
-          acc[c.campaign_id] = c.name;
-          return acc;
-        }, {} as Record<string, string>);
+        campaignMap = campaigns.reduce(
+          (acc, c) => {
+            acc[c.campaign_id] = c.name;
+            return acc;
+          },
+          {} as Record<string, string>,
+        );
       }
     }
 
-    const formattedData = (data || []).map(attr => ({
+    const formattedData = (data || []).map((attr) => ({
       id: attr.id,
       phone: attr.phone_normalized,
       leadId: attr.leads?.lead_id,
@@ -520,8 +599,11 @@ export class ZohoService {
       formName: attr.leads?.form_name,
       funnelStage: attr.funnel_stage,
       attributedSpend: parseFloat(attr.attributed_spend_usd) || 0,
+      offerAmount: attr.offer_amount ? parseFloat(attr.offer_amount) : null,
       dealAmount: attr.deal_amount ? parseFloat(attr.deal_amount) : null,
-      paymentAmount: attr.payment_amount ? parseFloat(attr.payment_amount) : null,
+      paymentAmount: attr.payment_amount
+        ? parseFloat(attr.payment_amount)
+        : null,
       roas: attr.roas ? parseFloat(attr.roas) : null,
       contactDate: attr.contact_date,
       offerDate: attr.offer_date,

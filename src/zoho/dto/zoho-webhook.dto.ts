@@ -52,6 +52,7 @@ export interface LeadLookupResult {
       deal?: string;
       payment?: string;
     };
+    offerAmount?: number;
     dealAmount?: number;
     paymentAmount?: number;
   };
@@ -79,6 +80,7 @@ export interface LeadAttributionRecord {
   ad_set_id?: string;
   attributed_spend_usd?: number;
   funnel_stage: string;
+  offer_amount?: number;
   deal_amount?: number;
   payment_amount?: number;
   currency?: string;

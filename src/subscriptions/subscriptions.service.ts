@@ -14,9 +14,7 @@ export class SubscriptionsService {
   async getSubscriptions() {
     const supabase = this.supabaseService.getClient();
 
-    const { data, error } = await supabase
-      .from('subscriptions')
-      .select(`
+    const { data, error } = await supabase.from('subscriptions').select(`
         *,
         ad_accounts (account_name, account_id)
       `);
@@ -42,9 +40,7 @@ export class SubscriptionsService {
     const supabase = this.supabaseService.getClient();
 
     try {
-      const { data: accounts } = await supabase
-        .from('ad_accounts')
-        .select('*');
+      const { data: accounts } = await supabase.from('ad_accounts').select('*');
 
       const subscriptions: Array<{
         id: string;
@@ -59,18 +55,23 @@ export class SubscriptionsService {
 
       for (const account of accounts || []) {
         try {
-          const status = await this.metaService.getSubscriptionStatus(account.account_id);
+          const status = await this.metaService.getSubscriptionStatus(
+            account.account_id,
+          );
           const isSubscribed = status.length > 0;
 
           const { data: sub } = await supabase
             .from('subscriptions')
-            .upsert({
-              ad_account_id: account.id,
-              status: isSubscribed ? 'subscribed' : 'not_subscribed',
-              fields: isSubscribed ? 'leadgen,ads,adsets,campaigns' : '',
-              last_attempt: new Date().toISOString(),
-              last_success: isSubscribed ? new Date().toISOString() : null,
-            }, { onConflict: 'ad_account_id' })
+            .upsert(
+              {
+                ad_account_id: account.id,
+                status: isSubscribed ? 'subscribed' : 'not_subscribed',
+                fields: isSubscribed ? 'leadgen,ads,adsets,campaigns' : '',
+                last_attempt: new Date().toISOString(),
+                last_success: isSubscribed ? new Date().toISOString() : null,
+              },
+              { onConflict: 'ad_account_id' },
+            )
             .select()
             .single();
 
@@ -87,16 +88,20 @@ export class SubscriptionsService {
             });
           }
         } catch (error) {
-          this.logger.error(`Failed to check subscription for ${account.account_id}`, error);
+          this.logger.error(
+            `Failed to check subscription for ${account.account_id}`,
+            error,
+          );
 
-          await supabase
-            .from('subscriptions')
-            .upsert({
+          await supabase.from('subscriptions').upsert(
+            {
               ad_account_id: account.id,
               status: 'error',
               last_attempt: new Date().toISOString(),
               last_error: (error as Error).message,
-            }, { onConflict: 'ad_account_id' });
+            },
+            { onConflict: 'ad_account_id' },
+          );
         }
       }
 
@@ -111,34 +116,34 @@ export class SubscriptionsService {
     const supabase = this.supabaseService.getClient();
 
     try {
-      const { data: accounts } = await supabase
-        .from('ad_accounts')
-        .select('*');
+      const { data: accounts } = await supabase.from('ad_accounts').select('*');
 
       for (const account of accounts || []) {
         try {
           await this.metaService.subscribeToWebhook(account.account_id);
 
-          await supabase
-            .from('subscriptions')
-            .upsert({
+          await supabase.from('subscriptions').upsert(
+            {
               ad_account_id: account.id,
               status: 'subscribed',
               fields: 'leadgen,ads,adsets,campaigns',
               last_attempt: new Date().toISOString(),
               last_success: new Date().toISOString(),
-            }, { onConflict: 'ad_account_id' });
+            },
+            { onConflict: 'ad_account_id' },
+          );
         } catch (error) {
           this.logger.error(`Failed to subscribe ${account.account_id}`, error);
 
-          await supabase
-            .from('subscriptions')
-            .upsert({
+          await supabase.from('subscriptions').upsert(
+            {
               ad_account_id: account.id,
               status: 'error',
               last_attempt: new Date().toISOString(),
               last_error: (error as Error).message,
-            }, { onConflict: 'ad_account_id' });
+            },
+            { onConflict: 'ad_account_id' },
+          );
         }
       }
 

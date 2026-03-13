@@ -1,4 +1,12 @@
-import { Controller, Get, Post, Query, Body, Logger, Req } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Query,
+  Body,
+  Logger,
+  Req,
+} from '@nestjs/common';
 import type { RawBodyRequest } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../common/supabase.service';
@@ -39,7 +47,9 @@ export class WebhookController {
     @Query('hub.verify_token') token: string,
     @Query('hub.challenge') challenge: string,
   ) {
-    const verifyToken = this.configService.get<string>('META_WEBHOOK_VERIFY_TOKEN');
+    const verifyToken = this.configService.get<string>(
+      'META_WEBHOOK_VERIFY_TOKEN',
+    );
 
     if (mode === 'subscribe' && token === verifyToken) {
       this.logger.log('Webhook verified successfully');
@@ -51,12 +61,9 @@ export class WebhookController {
   }
 
   @Post()
-  async handleWebhook(
-    @Body() body: any,
-    @Req() req: RawBodyRequest<Request>,
-  ) {
+  async handleWebhook(@Body() body: any, @Req() req: RawBodyRequest<Request>) {
     const signature = req.headers['x-hub-signature-256'] as string;
-    
+
     if (signature && !this.verifySignature(req.rawBody, signature)) {
       this.logger.warn('Invalid webhook signature');
       return { success: false, error: 'Invalid signature' };
@@ -82,16 +89,18 @@ export class WebhookController {
     }
   }
 
-  private verifySignature(rawBody: Buffer | undefined, signature: string): boolean {
+  private verifySignature(
+    rawBody: Buffer | undefined,
+    signature: string,
+  ): boolean {
     if (!rawBody) return false;
-    
+
     const appSecret = this.configService.get<string>('META_APP_SECRET');
     if (!appSecret) return true;
 
-    const expectedSignature = 'sha256=' + crypto
-      .createHmac('sha256', appSecret)
-      .update(rawBody)
-      .digest('hex');
+    const expectedSignature =
+      'sha256=' +
+      crypto.createHmac('sha256', appSecret).update(rawBody).digest('hex');
 
     return crypto.timingSafeEqual(
       Buffer.from(signature),
@@ -119,12 +128,14 @@ export class WebhookController {
       let fullLeadData: LeadData | null = null;
       try {
         const leads = await this.metaService.getLeads(leadData.form_id);
-        fullLeadData = leads.find((l: LeadData) => l.id === leadData.leadgen_id) || null;
+        fullLeadData =
+          leads.find((l: LeadData) => l.id === leadData.leadgen_id) || null;
       } catch (error) {
         this.logger.warn('Could not fetch full lead data from Meta API', error);
       }
 
-      const accountId = leadData.ad_account_id || leadData.adgroup_id?.split('_')[0];
+      const accountId =
+        leadData.ad_account_id || leadData.adgroup_id?.split('_')[0];
       const { data: adAccount } = await supabase
         .from('ad_accounts')
         .select('id')
@@ -153,7 +164,8 @@ export class WebhookController {
 
       if (fullLeadData?.field_data && insertedLead) {
         for (const field of fullLeadData.field_data) {
-          const mappedFieldName = await this.fieldMappingsService.getMappedFieldName(field.name);
+          const mappedFieldName =
+            await this.fieldMappingsService.getMappedFieldName(field.name);
           await supabase.from('lead_field_data').insert({
             lead_id: insertedLead.id,
             field_name: field.name,
@@ -163,7 +175,9 @@ export class WebhookController {
         }
       }
 
-      this.logger.log(`Lead ${leadData.leadgen_id} inserted successfully via webhook`);
+      this.logger.log(
+        `Lead ${leadData.leadgen_id} inserted successfully via webhook`,
+      );
 
       await supabase.from('sync_logs').insert({
         type: 'webhook',

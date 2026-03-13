@@ -91,10 +91,7 @@ export class MappingsService {
   async deleteMapping(id: string) {
     const supabase = this.supabaseService.getClient();
 
-    const { error } = await supabase
-      .from('mappings')
-      .delete()
-      .eq('id', id);
+    const { error } = await supabase.from('mappings').delete().eq('id', id);
 
     if (error) {
       this.logger.error('Failed to delete mapping', error);
