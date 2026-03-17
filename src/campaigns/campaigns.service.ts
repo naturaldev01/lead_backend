@@ -269,15 +269,12 @@ export class CampaignsService {
     );
 
     const allCampaigns = campaigns.map((campaign) => {
-      // Get campaign's date-filtered spend (from daily_insights) for proportional distribution
+      // Keep campaign-level aggregates as a fallback when child rows are missing.
       const campaignDateData = dateRangeSpendByCampaign[campaign.campaign_id];
       const campaignDateSpend =
         startDate && endDate ? campaignDateData?.spend || 0 : 0;
       const campaignDateLeads =
         startDate && endDate ? campaignDateData?.leads || 0 : 0;
-
-      // Calculate campaign's all-time total spend from ads for ratio calculation
-      const campaignAllTimeSpend = campaign.spend_usd || 0;
 
       const adSetsWithCountries = (
         adSetsGroupedByCampaign[campaign.campaign_id] || []
@@ -370,25 +367,34 @@ export class CampaignsService {
       });
       const campaignCountries = Array.from(allCampaignCountries);
 
-      // Campaign spend: use daily_insights aggregated data directly for date-filtered queries
-      // This ensures accurate totals even when ad-level data is incomplete
+      const hierarchicalCampaignSpend = adSetsWithCountries.reduce(
+        (sum, adSet) => sum + (adSet.spendUsd || 0),
+        0,
+      );
+      const hierarchicalCampaignLeads = adSetsWithCountries.reduce(
+        (sum, adSet) => sum + (adSet.leads || 0),
+        0,
+      );
+
       let campaignSpend: number;
       let campaignLeads: number;
 
       if (startDate && endDate) {
-        // Use pre-aggregated campaign totals from daily_insights
-        campaignSpend = campaignDateSpend;
-        campaignLeads = campaignDateLeads;
+        // Keep parent totals aligned with the visible child hierarchy for date-filtered views.
+        campaignSpend = hierarchicalCampaignSpend;
+        campaignLeads = hierarchicalCampaignLeads;
+
+        // Fall back to campaign-level aggregates only when the campaign has no synced child rows.
+        if (
+          adSetsWithCountries.length === 0 &&
+          (campaignDateSpend > 0 || campaignDateLeads > 0)
+        ) {
+          campaignSpend = campaignDateSpend;
+          campaignLeads = campaignDateLeads;
+        }
       } else {
-        // All-time: use hierarchical aggregation from ads
-        campaignSpend = adSetsWithCountries.reduce(
-          (sum, adSet) => sum + (adSet.spendUsd || 0),
-          0,
-        );
-        campaignLeads = adSetsWithCountries.reduce(
-          (sum, adSet) => sum + (adSet.leads || 0),
-          0,
-        );
+        campaignSpend = hierarchicalCampaignSpend;
+        campaignLeads = hierarchicalCampaignLeads;
       }
 
       return {
@@ -427,10 +433,11 @@ export class CampaignsService {
     const result = filteredByDateCampaigns
       .map((campaign) => {
         let filteredAdSets = campaign.adSets;
+        let countryUpper: string | null = null;
 
         // Apply country filter at all levels
         if (country) {
-          const countryUpper = country.toUpperCase();
+          countryUpper = country.toUpperCase();
 
           filteredAdSets = filteredAdSets
             .map(
@@ -452,21 +459,40 @@ export class CampaignsService {
                 optimizationGoal: string;
                 spendUsd: number;
                 leads: number;
-              }) => ({
-                ...adSet,
-                ads: adSet.ads.filter((ad) =>
-                  ad.countries.includes(countryUpper),
-                ),
-              }),
+              }) => {
+                const filteredAds = adSet.ads.filter((ad) =>
+                  ad.countries.includes(countryUpper!),
+                );
+                const recalculatedCountries =
+                  adSet.countries.includes(countryUpper!)
+                    ? adSet.countries
+                    : Array.from(
+                        new Set(
+                          filteredAds.flatMap((ad) => ad.countries || []),
+                        ),
+                      );
+
+                return {
+                  ...adSet,
+                  ads: filteredAds,
+                  countries: recalculatedCountries,
+                  spendUsd: filteredAds.reduce(
+                    (sum, ad) => sum + (ad.spendUsd || 0),
+                    0,
+                  ),
+                  leads: filteredAds.reduce(
+                    (sum, ad) => sum + (ad.leads || 0),
+                    0,
+                  ),
+                };
+              },
             )
             .filter(
               (adSet: { countries: string[]; ads: unknown[] }) =>
-                adSet.countries.includes(countryUpper) || adSet.ads.length > 0,
+                adSet.countries.includes(countryUpper!) || adSet.ads.length > 0,
             );
 
-          const hasCountryInCampaign =
-            campaign.countries.includes(countryUpper);
-          if (!hasCountryInCampaign && filteredAdSets.length === 0) {
+          if (filteredAdSets.length === 0) {
             return null;
           }
         }
@@ -485,8 +511,28 @@ export class CampaignsService {
           }
         }
 
+        const recalculatedCampaignCountries = Array.from(
+          new Set<string>([
+            ...(countryUpper
+              ? campaign.countries.filter((value) => value === countryUpper)
+              : campaign.countries),
+            ...filteredAdSets.flatMap((adSet) => adSet.countries || []),
+          ]),
+        );
+        const recalculatedCampaignSpend = filteredAdSets.reduce(
+          (sum, adSet) => sum + (adSet.spendUsd || 0),
+          0,
+        );
+        const recalculatedCampaignLeads = filteredAdSets.reduce(
+          (sum, adSet) => sum + (adSet.leads || 0),
+          0,
+        );
+
         return {
           ...campaign,
+          countries: recalculatedCampaignCountries,
+          spendUsd: recalculatedCampaignSpend,
+          leads: recalculatedCampaignLeads,
           adSets: filteredAdSets,
         };
       })

@@ -56,8 +56,18 @@ export class DashboardController {
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,
     @Query('accountId') accountId?: string,
+    @Query('cohortStartDate') cohortStartDate?: string,
+    @Query('cohortEndDate') cohortEndDate?: string,
+    @Query('maxMonths') maxMonths?: string,
   ) {
-    return this.cohortService.getCohortRevenue(startDate, endDate, accountId);
+    return this.cohortService.getCohortRevenue(
+      startDate,
+      endDate,
+      accountId,
+      cohortStartDate,
+      cohortEndDate,
+      maxMonths ? parseInt(maxMonths) : undefined,
+    );
   }
 
   @Get('lead-trend')

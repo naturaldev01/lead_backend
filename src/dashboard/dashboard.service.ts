@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../common/supabase.service';
+import { chunkArray, isHrFormName } from './reporting-helpers';
 
 export interface DashboardStatsV2 {
   spend: number;
@@ -30,6 +31,8 @@ export interface DashboardFilters {
 @Injectable()
 export class DashboardService {
   private readonly logger = new Logger(DashboardService.name);
+  private readonly queryBatchSize = 1000;
+  private readonly inBatchSize = 200;
 
   constructor(private supabaseService: SupabaseService) {}
 
@@ -94,7 +97,6 @@ export class DashboardService {
     const { startDate, endDate, accountId, objective, country, service, language } = filters;
 
     let totalSpend = 0;
-    let totalLeads = 0;
 
     // Get spend and leads from daily_insights or campaigns
     if (startDate && endDate) {
@@ -133,7 +135,6 @@ export class DashboardService {
         }
 
         totalSpend = filteredInsights.reduce((sum, i) => sum + (parseFloat(i.spend_usd) || 0), 0);
-        totalLeads = filteredInsights.reduce((sum, i) => sum + (i.leads_count || 0), 0);
       }
     } else {
       const { data, error } = await supabase.rpc('get_campaigns_totals', {
@@ -143,23 +144,34 @@ export class DashboardService {
 
       if (!error && data) {
         totalSpend = parseFloat(data.total_spend) || 0;
-        totalLeads = parseInt(data.total_leads) || 0;
       }
     }
 
+    const eligibleLeads = await this.fetchEligibleLeads(filters);
+    const totalLeads = eligibleLeads.length;
+    const leadIds = eligibleLeads.map((lead) => lead.id);
+
     // Get attribution metrics (deals, revenue, offers)
-    let attributionQuery = supabase
-      .from('lead_attribution')
-      .select('funnel_stage, deal_amount, offer_amount, payment_amount, campaign_id');
+    const attributions: Array<{
+      funnel_stage: string | null;
+      deal_amount: string | number | null;
+      offer_amount: string | number | null;
+      payment_amount: string | number | null;
+    }> = [];
 
-    if (startDate) {
-      attributionQuery = attributionQuery.gte('lead_date', startDate);
-    }
-    if (endDate) {
-      attributionQuery = attributionQuery.lte('lead_date', endDate);
-    }
+    for (const chunk of chunkArray(leadIds, this.inBatchSize)) {
+      const { data, error } = await supabase
+        .from('lead_attribution')
+        .select('funnel_stage, deal_amount, offer_amount, payment_amount')
+        .in('lead_id', chunk);
 
-    const { data: attributions } = await attributionQuery;
+      if (error) {
+        this.logger.error('Failed to fetch filtered attributions for dashboard stats', error);
+        continue;
+      }
+
+      attributions.push(...(data || []));
+    }
 
     let deals = 0;
     let totalRevenue = 0;
@@ -168,35 +180,8 @@ export class DashboardService {
     let totalDealAmount = 0;
     let dealAmountCount = 0;
 
-    if (attributions) {
-      // Filter by campaign if service/country/language specified
-      let filteredAttributions = attributions;
-      
-      if (service || country || language || accountId) {
-        const campaignIds = [...new Set(attributions.map(a => a.campaign_id).filter(Boolean))];
-        
-        if (campaignIds.length > 0) {
-          let campaignsQuery = supabase
-            .from('campaigns')
-            .select('campaign_id, name, ad_account_id')
-            .in('campaign_id', campaignIds);
-
-          const { data: campaigns } = await campaignsQuery;
-          const campaignMap = new Map(campaigns?.map(c => [c.campaign_id, { name: c.name, accountId: c.ad_account_id }]) || []);
-          
-          filteredAttributions = attributions.filter(a => {
-            const campaign = campaignMap.get(a.campaign_id);
-            if (!campaign) return true;
-            if (accountId && campaign.accountId !== accountId) return false;
-            if (service && !this.matchesService(campaign.name, service)) return false;
-            if (country && !this.matchesCountry(campaign.name, country)) return false;
-            if (language && !this.matchesLanguage(campaign.name, language)) return false;
-            return true;
-          });
-        }
-      }
-
-      for (const attr of filteredAttributions) {
+    if (attributions.length > 0) {
+      for (const attr of attributions) {
         // Count deals (funnel_stage = 'deal' or 'payment')
         if (attr.funnel_stage === 'deal' || attr.funnel_stage === 'payment') {
           deals++;
@@ -204,14 +189,14 @@ export class DashboardService {
 
         // Sum revenue from deal_amount
         if (attr.deal_amount) {
-          totalRevenue += parseFloat(attr.deal_amount) || 0;
-          totalDealAmount += parseFloat(attr.deal_amount) || 0;
+          totalRevenue += parseFloat(String(attr.deal_amount)) || 0;
+          totalDealAmount += parseFloat(String(attr.deal_amount)) || 0;
           dealAmountCount++;
         }
 
         // Sum offer amounts
         if (attr.offer_amount) {
-          totalOfferAmount += parseFloat(attr.offer_amount) || 0;
+          totalOfferAmount += parseFloat(String(attr.offer_amount)) || 0;
           offerCount++;
         }
       }
@@ -278,5 +263,79 @@ export class DashboardService {
     const name = campaignName.toLowerCase();
     const lang = language.toLowerCase();
     return name.includes(lang);
+  }
+
+  private async fetchEligibleLeads(filters: DashboardFilters) {
+    const supabase = this.supabaseService.getClient();
+    const { startDate, endDate, accountId, country, service, language } = filters;
+    const leads: Array<{
+      id: string;
+      campaign_id: string | null;
+      form_name: string | null;
+      campaigns?: { name: string; ad_account_id: string | null } | null;
+    }> = [];
+    let offset = 0;
+
+    while (true) {
+      let query = supabase
+        .from('leads')
+        .select(
+          `
+          id,
+          campaign_id,
+          form_name,
+          campaigns (
+            name,
+            ad_account_id
+          )
+        `,
+        )
+        .order('created_at', { ascending: true })
+        .range(offset, offset + this.queryBatchSize - 1);
+
+      if (startDate) {
+        query = query.gte('created_at', startDate);
+      }
+      if (endDate) {
+        query = query.lte('created_at', endDate);
+      }
+
+      const { data, error } = await query;
+      if (error) {
+        this.logger.error('Failed to fetch eligible leads for dashboard reporting', error);
+        return [];
+      }
+
+      if (!data || data.length === 0) {
+        break;
+      }
+
+      for (const lead of data as any[]) {
+        const campaign = Array.isArray(lead.campaigns) ? lead.campaigns[0] : lead.campaigns;
+        const campaignName = campaign?.name || '';
+        if (isHrFormName(lead.form_name)) continue;
+        if (accountId && campaign?.ad_account_id !== accountId) continue;
+        if (service && !this.matchesService(campaignName, service)) continue;
+        if (country && !this.matchesCountry(campaignName, country)) continue;
+        if (language && !this.matchesLanguage(campaignName, language)) continue;
+
+        leads.push({
+          id: lead.id,
+          campaign_id: lead.campaign_id,
+          form_name: lead.form_name,
+          campaigns: campaign
+            ? { name: campaign.name, ad_account_id: campaign.ad_account_id }
+            : null,
+        });
+      }
+
+      if (data.length < this.queryBatchSize) {
+        break;
+      }
+
+      offset += this.queryBatchSize;
+    }
+
+    return leads;
   }
 }

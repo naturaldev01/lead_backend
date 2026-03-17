@@ -159,6 +159,273 @@ export class LeadsService {
     };
   }
 
+  async getLeadProfiles(search?: string, page = 1, limit = 50) {
+    return this.getLeadProfilesWithFilters({ search, page, limit });
+  }
+
+  private buildLeadProfilesQuery(params: {
+    search?: string;
+    country?: string;
+    source?: string;
+    status?: string;
+  }) {
+    const supabase = this.supabaseService.getClient();
+
+    let query = supabase.from('lead_profiles').select('*', { count: 'exact' });
+
+    if (params.search) {
+      query = query.or(
+        [
+          `meta_lead_id.ilike.%${params.search}%`,
+          `form_name.ilike.%${params.search}%`,
+          `full_name.ilike.%${params.search}%`,
+          `first_name.ilike.%${params.search}%`,
+          `last_name.ilike.%${params.search}%`,
+          `email.ilike.%${params.search}%`,
+          `phone.ilike.%${params.search}%`,
+          `city.ilike.%${params.search}%`,
+          `country.ilike.%${params.search}%`,
+          `source.ilike.%${params.search}%`,
+          `status.ilike.%${params.search}%`,
+        ].join(','),
+      );
+    }
+
+    if (params.country) {
+      query = query.eq('country', params.country);
+    }
+
+    if (params.source) {
+      query = query.eq('source', params.source);
+    }
+
+    if (params.status) {
+      query = query.eq('status', params.status);
+    }
+
+    return query;
+  }
+
+  private mapLeadProfile(profile: any) {
+    return {
+      leadUuid: profile.lead_uuid,
+      metaLeadId: profile.meta_lead_id,
+      adAccountId: profile.ad_account_id,
+      campaignId: profile.campaign_id,
+      source: profile.source || '',
+      formName: profile.form_name || '',
+      fullName:
+        profile.full_name ||
+        [profile.first_name, profile.last_name].filter(Boolean).join(' '),
+      firstName: profile.first_name || '',
+      lastName: profile.last_name || '',
+      email: profile.email || '',
+      phone: profile.phone || '',
+      city: profile.city || '',
+      country: profile.country || '',
+      status: profile.status || '',
+      dealAmount: profile.deal_amount,
+      offerAmount: profile.offer_amount,
+      paymentAmount: profile.payment_amount,
+      comments: profile.comments || '',
+      dateOfBirth: profile.date_of_birth,
+      createdTime: profile.created_time,
+      insertedAt: profile.inserted_at,
+      updatedAt: profile.updated_at,
+    };
+  }
+
+  async getLeadProfilesWithFilters(params: {
+    search?: string;
+    country?: string;
+    source?: string;
+    status?: string;
+    page?: number;
+    limit?: number;
+  }) {
+    const supabase = this.supabaseService.getClient();
+    const page = params.page || 1;
+    const limit = params.limit || 50;
+    const offset = (page - 1) * limit;
+
+    const query = this.buildLeadProfilesQuery(params)
+      .order('created_time', { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    const { data, count, error } = await query;
+
+    if (error) {
+      this.logger.error('Failed to fetch lead profiles', error);
+      throw error;
+    }
+
+    return {
+      data: (data || []).map((profile) => this.mapLeadProfile(profile)),
+      total: count || 0,
+      page,
+      limit,
+    };
+  }
+
+  async getLeadProfilesFilterOptions() {
+    const supabase = this.supabaseService.getClient();
+    
+    // Use parallel DISTINCT queries instead of scanning entire table
+    // Wrap RPC calls in Promises to handle errors properly
+    const safeRpc = async (fnName: string) => {
+      try {
+        return await supabase.rpc(fnName);
+      } catch {
+        return { data: null };
+      }
+    };
+
+    const [countriesResult, sourcesResult, statusesResult] = await Promise.all([
+      safeRpc('get_distinct_countries'),
+      safeRpc('get_distinct_sources'),
+      safeRpc('get_distinct_statuses'),
+    ]);
+
+    // If RPC functions exist, use their results
+    if (countriesResult.data && sourcesResult.data && statusesResult.data) {
+      return {
+        countries: (countriesResult.data as string[]).filter(Boolean).sort(),
+        sources: (sourcesResult.data as string[]).filter(Boolean).sort(),
+        statuses: (statusesResult.data as string[]).filter(Boolean).sort(),
+      };
+    }
+
+    // Fallback: fetch distinct values using standard queries with limit
+    // This is faster than scanning all rows for unique values
+    const [countriesData, sourcesData, statusesData] = await Promise.all([
+      supabase.from('lead_profiles').select('country').limit(5000),
+      supabase.from('lead_profiles').select('source').limit(5000),
+      supabase.from('lead_profiles').select('status').limit(5000),
+    ]);
+
+    const countries = new Set<string>();
+    const sources = new Set<string>();
+    const statuses = new Set<string>();
+
+    for (const row of countriesData.data || []) {
+      if (row.country?.trim()) countries.add(row.country.trim());
+    }
+    for (const row of sourcesData.data || []) {
+      if (row.source?.trim()) sources.add(row.source.trim());
+    }
+    for (const row of statusesData.data || []) {
+      if (row.status?.trim()) statuses.add(row.status.trim());
+    }
+
+    return {
+      countries: Array.from(countries).sort(),
+      sources: Array.from(sources).sort(),
+      statuses: Array.from(statuses).sort(),
+    };
+  }
+
+  async exportLeadProfilesCsv(params: {
+    search?: string;
+    country?: string;
+    source?: string;
+    status?: string;
+  }) {
+    const batchSize = 1000;
+    let offset = 0;
+    const rows: string[] = [];
+    const headers = [
+      'lead_uuid',
+      'meta_lead_id',
+      'created_time',
+      'inserted_at',
+      'updated_at',
+      'ad_account_id',
+      'campaign_id',
+      'source',
+      'form_name',
+      'full_name',
+      'first_name',
+      'last_name',
+      'email',
+      'phone',
+      'city',
+      'country',
+      'status',
+      'deal_amount',
+      'offer_amount',
+      'payment_amount',
+      'date_of_birth',
+      'comments',
+    ];
+
+    rows.push(headers.join(','));
+
+    while (true) {
+      const { data, error } = await this.buildLeadProfilesQuery(params)
+        .order('created_time', { ascending: false })
+        .range(offset, offset + batchSize - 1);
+
+      if (error) {
+        this.logger.error('Failed to export lead profiles CSV', error);
+        throw error;
+      }
+
+      if (!data || data.length === 0) {
+        break;
+      }
+
+      for (const profile of data) {
+        const csvRow = [
+          profile.lead_uuid,
+          profile.meta_lead_id,
+          profile.created_time,
+          profile.inserted_at,
+          profile.updated_at,
+          profile.ad_account_id,
+          profile.campaign_id,
+          profile.source,
+          profile.form_name,
+          profile.full_name,
+          profile.first_name,
+          profile.last_name,
+          profile.email,
+          profile.phone,
+          profile.city,
+          profile.country,
+          profile.status,
+          profile.deal_amount,
+          profile.offer_amount,
+          profile.payment_amount,
+          profile.date_of_birth,
+          profile.comments,
+        ].map((value) => this.escapeCsvValue(value));
+
+        rows.push(csvRow.join(','));
+      }
+
+      if (data.length < batchSize) {
+        break;
+      }
+
+      offset += batchSize;
+    }
+
+    return rows.join('\n');
+  }
+
+  private escapeCsvValue(value: unknown) {
+    if (value === null || value === undefined) {
+      return '';
+    }
+
+    const stringValue = String(value);
+    if (/[",\n]/.test(stringValue)) {
+      return `"${stringValue.replace(/"/g, '""')}"`;
+    }
+
+    return stringValue;
+  }
+
   async getLeadDetails(id: string) {
     const supabase = this.supabaseService.getClient();
 

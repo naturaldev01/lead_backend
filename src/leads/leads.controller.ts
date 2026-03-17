@@ -1,5 +1,6 @@
-import { Controller, Get, Post, Param, Query } from '@nestjs/common';
+import { Controller, Get, Post, Param, Query, Res } from '@nestjs/common';
 import { LeadsService } from './leads.service';
+import type { Response } from 'express';
 
 @Controller('api/leads')
 export class LeadsController {
@@ -28,6 +29,51 @@ export class LeadsController {
       parseInt(limit || '50', 10),
       includeFieldData === 'true',
     );
+  }
+
+  @Get('profiles')
+  async getLeadProfiles(
+    @Query('search') search?: string,
+    @Query('country') country?: string,
+    @Query('source') source?: string,
+    @Query('status') status?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.leadsService.getLeadProfilesWithFilters({
+      search,
+      country,
+      source,
+      status,
+      page: parseInt(page || '1', 10),
+      limit: parseInt(limit || '50', 10),
+    });
+  }
+
+  @Get('profiles/filters')
+  async getLeadProfilesFilterOptions() {
+    return this.leadsService.getLeadProfilesFilterOptions();
+  }
+
+  @Get('profiles/export')
+  async exportLeadProfilesCsv(
+    @Query('search') search?: string,
+    @Query('country') country?: string,
+    @Query('source') source?: string,
+    @Query('status') status?: string,
+    @Res() res?: Response,
+  ) {
+    const csv = await this.leadsService.exportLeadProfilesCsv({
+      search,
+      country,
+      source,
+      status,
+    });
+
+    const fileName = `lead_profiles_${new Date().toISOString().slice(0, 10)}.csv`;
+    res?.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res?.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res?.send(csv);
   }
 
   @Get(':id')

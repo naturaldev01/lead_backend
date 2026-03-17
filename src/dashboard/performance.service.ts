@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../common/supabase.service';
+import { chunkArray, isHrFormName } from './reporting-helpers';
 
 export interface CampaignPerformance {
   campaignId: string;
@@ -50,6 +51,8 @@ export interface FunnelSnapshot {
 @Injectable()
 export class PerformanceService {
   private readonly logger = new Logger(PerformanceService.name);
+  private readonly batchSize = 1000;
+  private readonly inBatchSize = 200;
 
   private readonly servicePatterns: Record<string, string[]> = {
     'Dental': ['dental', 'teeth', 'implant', 'veneer', 'hollywood smile'],
@@ -120,20 +123,23 @@ export class PerformanceService {
 
     // Get attributions by campaign
     const campaignIds = campaigns.map(c => c.campaign_id);
+    const eligibleLeads = await this.fetchEligibleLeads(startDate, endDate, accountId);
+    const leadCounts = new Map<string, number>();
+
+    for (const lead of eligibleLeads) {
+      const current = leadCounts.get(lead.campaign_id) || 0;
+      leadCounts.set(lead.campaign_id, current + 1);
+    }
+    const leadIds = eligibleLeads.map((lead) => lead.id);
     
-    let attributionsQuery = supabase
-      .from('lead_attribution')
-      .select('campaign_id, funnel_stage, deal_amount')
-      .in('campaign_id', campaignIds);
-
-    if (startDate) {
-      attributionsQuery = attributionsQuery.gte('lead_date', startDate);
+    const attributions: Array<{ campaign_id: string; funnel_stage: string; deal_amount: string | number | null }> = [];
+    for (const chunk of chunkArray(leadIds, this.inBatchSize)) {
+      const { data } = await supabase
+        .from('lead_attribution')
+        .select('campaign_id, funnel_stage, deal_amount')
+        .in('lead_id', chunk);
+      attributions.push(...(data || []));
     }
-    if (endDate) {
-      attributionsQuery = attributionsQuery.lte('lead_date', endDate);
-    }
-
-    const { data: attributions } = await attributionsQuery;
 
     // Aggregate attribution data by campaign
     const campaignAttribution = new Map<string, { deals: number; revenue: number }>();
@@ -146,7 +152,7 @@ export class PerformanceService {
       }
       
       if (attr.deal_amount) {
-        current.revenue += parseFloat(attr.deal_amount) || 0;
+        current.revenue += parseFloat(String(attr.deal_amount)) || 0;
       }
       
       campaignAttribution.set(attr.campaign_id, current);
@@ -160,7 +166,7 @@ export class PerformanceService {
       const attrData = campaignAttribution.get(campaign.campaign_id) || { deals: 0, revenue: 0 };
 
       const spend = spendData.spend;
-      const leads = spendData.leads;
+      const leads = leadCounts.get(campaign.campaign_id) || 0;
       const deals = attrData.deals;
       const revenue = attrData.revenue;
 
@@ -189,10 +195,10 @@ export class PerformanceService {
   ): Promise<ServicePerformance[]> {
     const supabase = this.supabaseService.getClient();
 
-    // Get campaigns
+    // Get campaigns with spend data in a single query (fixes N+1)
     let campaignsQuery = supabase
       .from('campaigns')
-      .select('campaign_id, name, ad_account_id');
+      .select('campaign_id, name, ad_account_id, spend_usd, insights_leads_count');
 
     if (accountId) {
       campaignsQuery = campaignsQuery.eq('ad_account_id', accountId);
@@ -215,8 +221,16 @@ export class PerformanceService {
 
     // Get spend by campaign
     const campaignIds = campaigns.map(c => c.campaign_id);
+    const eligibleLeads = await this.fetchEligibleLeads(startDate, endDate, accountId);
+    const leadsByService = new Map<string, number>();
+
+    for (const lead of eligibleLeads) {
+      const service = campaignServiceMap.get(lead.campaign_id);
+      if (!service) continue;
+      leadsByService.set(service, (leadsByService.get(service) || 0) + 1);
+    }
     
-    let spendData = new Map<string, { spend: number; leads: number }>();
+    const spendData = new Map<string, { spend: number; leads: number }>();
     
     if (startDate && endDate) {
       let insightsQuery = supabase
@@ -235,36 +249,25 @@ export class PerformanceService {
         spendData.set(insight.campaign_id, current);
       }
     } else {
+      // Use data already fetched with campaigns (no additional queries needed)
       for (const campaign of campaigns) {
-        const { data } = await supabase
-          .from('campaigns')
-          .select('spend_usd, insights_leads_count')
-          .eq('campaign_id', campaign.campaign_id)
-          .single();
-        
-        if (data) {
-          spendData.set(campaign.campaign_id, {
-            spend: data.spend_usd || 0,
-            leads: data.insights_leads_count || 0,
-          });
-        }
+        spendData.set(campaign.campaign_id, {
+          spend: campaign.spend_usd || 0,
+          leads: campaign.insights_leads_count || 0,
+        });
       }
     }
 
     // Get attributions
-    let attributionsQuery = supabase
-      .from('lead_attribution')
-      .select('campaign_id, funnel_stage, deal_amount')
-      .in('campaign_id', campaignIds);
-
-    if (startDate) {
-      attributionsQuery = attributionsQuery.gte('lead_date', startDate);
+    const leadIds = eligibleLeads.map((lead) => lead.id);
+    const attributions: Array<{ campaign_id: string; funnel_stage: string; deal_amount: string | number | null }> = [];
+    for (const chunk of chunkArray(leadIds, this.inBatchSize)) {
+      const { data } = await supabase
+        .from('lead_attribution')
+        .select('campaign_id, funnel_stage, deal_amount')
+        .in('lead_id', chunk);
+      attributions.push(...(data || []));
     }
-    if (endDate) {
-      attributionsQuery = attributionsQuery.lte('lead_date', endDate);
-    }
-
-    const { data: attributions } = await attributionsQuery;
 
     // Aggregate by service
     const serviceData = new Map<string, { spend: number; leads: number; deals: number; revenue: number }>();
@@ -276,7 +279,12 @@ export class PerformanceService {
 
       const current = serviceData.get(service) || { spend: 0, leads: 0, deals: 0, revenue: 0 };
       current.spend += data.spend;
-      current.leads += data.leads;
+      serviceData.set(service, current);
+    }
+
+    for (const [service, leads] of leadsByService) {
+      const current = serviceData.get(service) || { spend: 0, leads: 0, deals: 0, revenue: 0 };
+      current.leads += leads;
       serviceData.set(service, current);
     }
 
@@ -292,7 +300,7 @@ export class PerformanceService {
       }
       
       if (attr.deal_amount) {
-        current.revenue += parseFloat(attr.deal_amount) || 0;
+        current.revenue += parseFloat(String(attr.deal_amount)) || 0;
       }
       
       serviceData.set(service, current);
@@ -330,6 +338,7 @@ export class PerformanceService {
       .select(`
         id,
         ad_name,
+        form_name,
         campaign_id,
         campaigns (ad_account_id)
       `);
@@ -350,6 +359,7 @@ export class PerformanceService {
         (l: any) => l.campaigns?.ad_account_id === accountId,
       );
     }
+    filteredLeads = filteredLeads.filter((l: any) => !isHrFormName(l.form_name));
 
     // Get lead IDs
     const leadIds = filteredLeads.map((l) => l.id);
@@ -419,7 +429,6 @@ export class PerformanceService {
 
     // Get total spend and leads
     let totalSpend = 0;
-    let totalLeads = 0;
 
     if (startDate && endDate) {
       let insightsQuery = supabase
@@ -436,7 +445,6 @@ export class PerformanceService {
 
       for (const insight of insights || []) {
         totalSpend += parseFloat(insight.spend_usd) || 0;
-        totalLeads += insight.leads_count || 0;
       }
     } else {
       const { data } = await supabase.rpc('get_campaigns_totals', {
@@ -446,42 +454,28 @@ export class PerformanceService {
 
       if (data) {
         totalSpend = parseFloat(data.total_spend) || 0;
-        totalLeads = parseInt(data.total_leads) || 0;
       }
     }
+
+    const eligibleLeads = await this.fetchEligibleLeads(startDate, endDate, accountId);
+    const totalLeads = eligibleLeads.length;
+    const leadIds = eligibleLeads.map((lead) => lead.id);
 
     // Get funnel stage counts from lead_attribution
-    let attributionsQuery = supabase
-      .from('lead_attribution')
-      .select('funnel_stage, contact_date, offer_date, deal_date, payment_date, campaign_id');
-
-    if (startDate) {
-      attributionsQuery = attributionsQuery.gte('lead_date', startDate);
-    }
-    if (endDate) {
-      attributionsQuery = attributionsQuery.lte('lead_date', endDate);
-    }
-
-    const { data: attributions } = await attributionsQuery;
-
-    // Filter by account if needed
-    let filteredAttributions = attributions || [];
-    
-    if (accountId && filteredAttributions.length > 0) {
-      const campaignIds = [...new Set(filteredAttributions.map(a => a.campaign_id).filter(Boolean))];
-      
-      if (campaignIds.length > 0) {
-        const { data: campaigns } = await supabase
-          .from('campaigns')
-          .select('campaign_id, ad_account_id')
-          .in('campaign_id', campaignIds);
-        
-        const accountMap = new Map(campaigns?.map(c => [c.campaign_id, c.ad_account_id]) || []);
-        
-        filteredAttributions = filteredAttributions.filter(a => {
-          return accountMap.get(a.campaign_id) === accountId;
-        });
-      }
+    const filteredAttributions: Array<{
+      funnel_stage: string;
+      contact_date: string | null;
+      offer_date: string | null;
+      deal_date: string | null;
+      payment_date: string | null;
+      campaign_id: string | null;
+    }> = [];
+    for (const chunk of chunkArray(leadIds, this.inBatchSize)) {
+      const { data } = await supabase
+        .from('lead_attribution')
+        .select('funnel_stage, contact_date, offer_date, deal_date, payment_date, campaign_id')
+        .in('lead_id', chunk);
+      filteredAttributions.push(...(data || []));
     }
 
     // Count attributions that have reached each stage (cumulative counting)
@@ -547,5 +541,61 @@ export class PerformanceService {
     }
     
     return 'Other';
+  }
+
+  private async fetchEligibleLeads(
+    startDate?: string,
+    endDate?: string,
+    accountId?: string,
+  ): Promise<Array<{ id: string; campaign_id: string; ad_name: string | null; form_name: string | null }>> {
+    const supabase = this.supabaseService.getClient();
+    const leads: Array<{ id: string; campaign_id: string; ad_name: string | null; form_name: string | null }> = [];
+    let offset = 0;
+
+    while (true) {
+      let query = supabase
+        .from('leads')
+        .select(
+          `
+          id,
+          campaign_id,
+          ad_name,
+          form_name,
+          campaigns (
+            ad_account_id
+          )
+        `,
+        )
+        .order('created_at', { ascending: true })
+        .range(offset, offset + this.batchSize - 1);
+
+      if (startDate) {
+        query = query.gte('created_at', startDate);
+      }
+      if (endDate) {
+        query = query.lte('created_at', endDate);
+      }
+
+      const { data, error } = await query;
+      if (error) {
+        this.logger.error('Failed to fetch eligible leads for performance reporting', error);
+        return [];
+      }
+
+      if (!data || data.length === 0) break;
+
+      leads.push(
+        ...data.filter((lead: any) => {
+          if (isHrFormName(lead.form_name)) return false;
+          if (accountId && lead.campaigns?.ad_account_id !== accountId) return false;
+          return true;
+        }),
+      );
+
+      if (data.length < this.batchSize) break;
+      offset += this.batchSize;
+    }
+
+    return leads;
   }
 }

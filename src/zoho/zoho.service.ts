@@ -94,6 +94,7 @@ export class ZohoService {
         normalizedPhone || normalizedEmail || '',
         payload.event_name,
         payload.amount,
+        payload.event_date,
       );
 
       return {
@@ -123,9 +124,11 @@ export class ZohoService {
     normalizedPhone: string,
     eventType: string,
     amount?: number,
+    eventDate?: string,
   ): Promise<void> {
     const supabase = this.supabaseService.getClient();
-    const today = new Date().toISOString().split('T')[0];
+    // Zoho'dan gelen gerçek event tarihini kullan, yoksa bugünün tarihini kullan
+    const dateToUse = eventDate || new Date().toISOString().split('T')[0];
 
     // Check if attribution record exists
     const { data: existing } = await supabase
@@ -147,7 +150,7 @@ export class ZohoService {
       };
 
       if (dateField) {
-        (updateData as any)[dateField] = today;
+        (updateData as any)[dateField] = dateToUse;
       }
 
       if (eventType.includes('offer') && amount) {
@@ -202,7 +205,7 @@ export class ZohoService {
       };
 
       if (dateField) {
-        (newAttribution as any)[dateField] = today;
+        (newAttribution as any)[dateField] = dateToUse;
       }
 
       if (eventType.includes('offer') && amount) {

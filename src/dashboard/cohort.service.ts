@@ -3,6 +3,7 @@ import { SupabaseService } from '../common/supabase.service';
 
 export interface CohortData {
   cohortMonth: string;
+  leadCount: number;
   monthsData: {
     month: number;
     revenue: number;
@@ -25,144 +26,72 @@ export class CohortService {
     startDate?: string,
     endDate?: string,
     accountId?: string,
+    cohortStartDate?: string,
+    cohortEndDate?: string,
+    maxMonthsToTrack?: number,
   ): Promise<CohortSummary> {
     const supabase = this.supabaseService.getClient();
+    const trackLimit = maxMonthsToTrack || 12;
+    const cohortStart = cohortStartDate || startDate;
+    const cohortEnd = cohortEndDate || endDate;
 
-    // Get all leads with their attribution data
-    let leadsQuery = supabase
-      .from('leads')
-      .select(`
-        id,
-        created_at,
-        campaign_id,
-        campaigns!inner (
-          ad_account_id
-        )
-      `);
-
-    if (startDate) {
-      leadsQuery = leadsQuery.gte('created_at', startDate);
-    }
-    if (endDate) {
-      leadsQuery = leadsQuery.lte('created_at', endDate);
-    }
-
-    const { data: leads, error: leadsError } = await leadsQuery;
-
-    if (leadsError) {
-      this.logger.error('Failed to fetch leads for cohort', leadsError);
-      return { cohorts: [], maxMonths: 0 };
-    }
-
-    // Filter by account if specified
-    let filteredLeads = leads || [];
-    if (accountId) {
-      filteredLeads = filteredLeads.filter(
-        (l: any) => l.campaigns?.ad_account_id === accountId,
-      );
-    }
-
-    // Get lead IDs
-    const leadIds = filteredLeads.map((l) => l.id);
-
-    if (leadIds.length === 0) {
-      return { cohorts: [], maxMonths: 0 };
-    }
-
-    // Get attributions for these leads (use payment_amount or deal_amount for revenue)
-    const { data: attributions } = await supabase
-      .from('lead_attribution')
-      .select('lead_id, deal_amount, payment_amount, deal_date, payment_date')
-      .in('lead_id', leadIds);
-
-    // Create a map of lead_id to attribution (prefer payment_amount, fallback to deal_amount)
-    const attributionMap = new Map<string, { dealAmount: number; dealDate: string }>();
-    for (const attr of attributions || []) {
-      const amount = attr.payment_amount || attr.deal_amount;
-      const date = attr.payment_date || attr.deal_date;
-      
-      if (amount && date) {
-        attributionMap.set(attr.lead_id, {
-          dealAmount: parseFloat(amount),
-          dealDate: date,
-        });
-      }
-    }
-
-    // Group leads by cohort month
-    const cohortMap = new Map<string, { leadId: string; createdAt: Date }[]>();
-    for (const lead of filteredLeads) {
-      const createdAt = new Date(lead.created_at);
-      const cohortKey = `${createdAt.getFullYear()}-${String(createdAt.getMonth() + 1).padStart(2, '0')}`;
-      
-      if (!cohortMap.has(cohortKey)) {
-        cohortMap.set(cohortKey, []);
-      }
-      cohortMap.get(cohortKey)!.push({
-        leadId: lead.id,
-        createdAt,
+    try {
+      const { data, error } = await supabase.rpc('get_cohort_revenue_optimized', {
+        p_cohort_start: cohortStart || null,
+        p_cohort_end: cohortEnd || null,
+        p_account_id: accountId || null,
+        p_max_months: trackLimit,
       });
-    }
 
-    // Calculate revenue for each cohort at each month interval
-    const now = new Date();
-    const cohorts: CohortData[] = [];
-    let maxMonths = 0;
+      if (error) {
+        this.logger.error('RPC get_cohort_revenue_optimized failed', error);
+        return { cohorts: [], maxMonths: 0 };
+      }
 
-    const sortedCohortKeys = Array.from(cohortMap.keys()).sort();
+      if (!data || data.length === 0) {
+        return { cohorts: [], maxMonths: 0 };
+      }
 
-    for (const cohortMonth of sortedCohortKeys) {
-      const cohortLeads = cohortMap.get(cohortMonth)!;
-      const cohortDate = new Date(cohortMonth + '-01');
-      
-      // Calculate how many months have passed since this cohort
-      const monthsElapsed = this.getMonthsDiff(cohortDate, now);
-      maxMonths = Math.max(maxMonths, monthsElapsed);
+      const cohortMap = new Map<string, CohortData>();
+      let maxMonths = 0;
 
-      const monthsData: { month: number; revenue: number; cumulativeRevenue: number }[] = [];
-      let cumulativeRevenue = 0;
+      for (const row of data) {
+        const cohortMonth = row.cohort_month;
+        const monthOffset = parseInt(row.month_offset);
+        const leadCount = parseInt(row.lead_count);
+        const cumulativeRevenue = parseFloat(row.cumulative_revenue) || 0;
 
-      // Calculate revenue for each month (0 to monthsElapsed)
-      for (let month = 0; month <= Math.min(monthsElapsed, 12); month++) {
-        const targetDate = new Date(cohortDate);
-        targetDate.setMonth(targetDate.getMonth() + month + 1);
-        targetDate.setDate(0); // Last day of the month
+        maxMonths = Math.max(maxMonths, monthOffset);
 
-        let monthRevenue = 0;
-
-        for (const lead of cohortLeads) {
-          const attribution = attributionMap.get(lead.leadId);
-          if (attribution) {
-            const dealDate = new Date(attribution.dealDate);
-            // Check if deal was closed within this month period
-            if (dealDate <= targetDate) {
-              // Only count once when the deal happened
-              const dealMonth = this.getMonthsDiff(cohortDate, dealDate);
-              if (dealMonth === month) {
-                monthRevenue += attribution.dealAmount;
-              }
-            }
-          }
+        if (!cohortMap.has(cohortMonth)) {
+          cohortMap.set(cohortMonth, {
+            cohortMonth,
+            leadCount,
+            monthsData: [],
+          });
         }
 
-        cumulativeRevenue += monthRevenue;
-        monthsData.push({
-          month,
-          revenue: monthRevenue,
+        const cohort = cohortMap.get(cohortMonth)!;
+        const prevCumulative = cohort.monthsData.length > 0
+          ? cohort.monthsData[cohort.monthsData.length - 1].cumulativeRevenue
+          : 0;
+
+        cohort.monthsData.push({
+          month: monthOffset,
+          revenue: cumulativeRevenue - prevCumulative,
           cumulativeRevenue,
         });
       }
 
-      cohorts.push({
-        cohortMonth,
-        monthsData,
-      });
-    }
+      const cohorts = Array.from(cohortMap.values()).sort(
+        (a, b) => a.cohortMonth.localeCompare(b.cohortMonth)
+      );
 
-    return {
-      cohorts,
-      maxMonths: Math.min(maxMonths, 12),
-    };
+      return { cohorts, maxMonths };
+    } catch (err) {
+      this.logger.error('Failed to fetch cohort revenue', err);
+      return { cohorts: [], maxMonths: 0 };
+    }
   }
 
   async getLeadTrend(
@@ -173,61 +102,26 @@ export class CohortService {
   ): Promise<{ date: string; leads: number }[]> {
     const supabase = this.supabaseService.getClient();
 
-    let query = supabase
-      .from('daily_insights')
-      .select('date, leads_count, ad_account_id');
+    try {
+      const { data, error } = await supabase.rpc('get_lead_trend_optimized', {
+        p_start_date: startDate || null,
+        p_end_date: endDate || null,
+        p_account_id: accountId || null,
+        p_granularity: granularity,
+      });
 
-    if (startDate) {
-      query = query.gte('date', startDate);
-    }
-    if (endDate) {
-      query = query.lte('date', endDate);
-    }
-    if (accountId) {
-      query = query.eq('ad_account_id', accountId);
-    }
-
-    const { data: insights } = await query;
-
-    if (!insights || insights.length === 0) {
-      return [];
-    }
-
-    // Group by granularity
-    const groupedData = new Map<string, number>();
-
-    for (const insight of insights) {
-      let key: string;
-      const date = new Date(insight.date);
-
-      switch (granularity) {
-        case 'day':
-          key = insight.date;
-          break;
-        case 'week':
-          const weekStart = new Date(date);
-          weekStart.setDate(date.getDate() - date.getDay());
-          key = weekStart.toISOString().split('T')[0];
-          break;
-        case 'month':
-        default:
-          key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-          break;
+      if (error) {
+        this.logger.error('RPC get_lead_trend_optimized failed', error);
+        return [];
       }
 
-      const current = groupedData.get(key) || 0;
-      groupedData.set(key, current + (insight.leads_count || 0));
+      return (data || []).map((row: any) => ({
+        date: row.date,
+        leads: parseInt(row.leads) || 0,
+      }));
+    } catch (err) {
+      this.logger.error('Failed to fetch lead trend', err);
+      return [];
     }
-
-    return Array.from(groupedData.entries())
-      .map(([date, leads]) => ({ date, leads }))
-      .sort((a, b) => a.date.localeCompare(b.date));
-  }
-
-  private getMonthsDiff(start: Date, end: Date): number {
-    return (
-      (end.getFullYear() - start.getFullYear()) * 12 +
-      (end.getMonth() - start.getMonth())
-    );
   }
 }

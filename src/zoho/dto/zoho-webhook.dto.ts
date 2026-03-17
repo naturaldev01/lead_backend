@@ -19,6 +19,10 @@ export class ZohoWebhookDto {
   @IsOptional()
   @IsNumber()
   amount?: number;
+
+  @IsOptional()
+  @IsString()
+  event_date?: string; // Gerçek event tarihi (YYYY-MM-DD formatında)
 }
 
 export class PhoneLookupQueryDto {
