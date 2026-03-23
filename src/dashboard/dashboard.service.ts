@@ -100,32 +100,62 @@ export class DashboardService {
 
     // Get spend and leads from daily_insights or campaigns
     if (startDate && endDate) {
-      let query = supabase
-        .from('daily_insights')
-        .select('spend_usd, leads_count, campaign_id');
+      // Fetch all daily_insights with pagination (Supabase default limit is 1000)
+      const allInsights: Array<{ spend_usd: any; leads_count: any; campaign_id: string }> = [];
+      let offset = 0;
+      const batchSize = 1000;
 
-      query = query.gte('date', startDate).lte('date', endDate);
+      while (true) {
+        let query = supabase
+          .from('daily_insights')
+          .select('spend_usd, leads_count, campaign_id')
+          .gte('date', startDate)
+          .lte('date', endDate)
+          .range(offset, offset + batchSize - 1);
 
-      if (accountId) {
-        query = query.eq('ad_account_id', accountId);
+        if (accountId) {
+          query = query.eq('ad_account_id', accountId);
+        }
+
+        const { data: insights, error } = await query;
+
+        if (error) {
+          this.logger.error('Failed to fetch daily_insights', error);
+          break;
+        }
+
+        if (!insights || insights.length === 0) {
+          break;
+        }
+
+        allInsights.push(...insights);
+
+        if (insights.length < batchSize) {
+          break;
+        }
+
+        offset += batchSize;
       }
 
-      const { data: insights } = await query;
-
-      if (insights) {
+      if (allInsights.length > 0) {
         // Filter by campaign name patterns if service/country/language specified
-        let filteredInsights = insights;
+        let filteredInsights = allInsights;
         
         if (service || country || language) {
-          const campaignIds = [...new Set(insights.map(i => i.campaign_id))];
-          const { data: campaigns } = await supabase
-            .from('campaigns')
-            .select('campaign_id, name')
-            .in('campaign_id', campaignIds);
+          const campaignIds = [...new Set(allInsights.map(i => i.campaign_id))];
           
-          const campaignMap = new Map(campaigns?.map(c => [c.campaign_id, c.name]) || []);
+          // Fetch campaigns in batches too
+          const campaignMap = new Map<string, string>();
+          for (const chunk of chunkArray(campaignIds, this.inBatchSize)) {
+            const { data: campaigns } = await supabase
+              .from('campaigns')
+              .select('campaign_id, name')
+              .in('campaign_id', chunk);
+            
+            campaigns?.forEach(c => campaignMap.set(c.campaign_id, c.name));
+          }
           
-          filteredInsights = insights.filter(i => {
+          filteredInsights = allInsights.filter(i => {
             const campaignName = campaignMap.get(i.campaign_id) || '';
             if (service && !this.matchesService(campaignName, service)) return false;
             if (country && !this.matchesCountry(campaignName, country)) return false;

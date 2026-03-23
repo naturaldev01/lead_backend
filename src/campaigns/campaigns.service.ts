@@ -85,51 +85,90 @@ export class CampaignsService {
 
     const supabase = this.supabaseService.getClient();
 
-    let campaignQuery = supabase
-      .from('campaigns')
-      .select(
-        `
-        *,
-        ad_accounts (account_name)
-      `,
-      )
-      .order('spend_usd', { ascending: false });
+    // Helper function to fetch all rows with pagination
+    const fetchAllWithPagination = async <T>(
+      baseQuery: () => any,
+    ): Promise<T[]> => {
+      const allRows: T[] = [];
+      let offset = 0;
+      const batchSize = 1000;
 
-    let adSetQuery = supabase
-      .from('ad_sets')
-      .select('*')
-      .order('spend_usd', { ascending: false });
+      while (true) {
+        const { data, error } = await baseQuery().range(
+          offset,
+          offset + batchSize - 1,
+        );
 
-    let adQuery = supabase
-      .from('ads')
-      .select('*')
-      .order('spend_usd', { ascending: false });
+        if (error || !data || data.length === 0) {
+          break;
+        }
 
-    if (accountId) {
-      campaignQuery = campaignQuery.eq('ad_account_id', accountId);
-      adSetQuery = adSetQuery.eq('ad_account_id', accountId);
-      adQuery = adQuery.eq('ad_account_id', accountId);
-    }
+        allRows.push(...data);
 
-    if (search) {
-      campaignQuery = campaignQuery.ilike('name', `%${search}%`);
-    }
+        if (data.length < batchSize) {
+          break;
+        }
 
-    // Pre-filter by country at database level for better performance
-    if (country) {
-      const countryPattern = `%${country}%`;
-      adQuery = adQuery.ilike('name', countryPattern);
-    }
+        offset += batchSize;
+      }
 
-    const [campaignsResult, adSetsResult, adsResult] = await Promise.all([
-      campaignQuery,
-      adSetQuery,
-      adQuery,
+      return allRows;
+    };
+
+    // Build base queries
+    const buildCampaignQuery = () => {
+      let query = supabase
+        .from('campaigns')
+        .select(
+          `
+          *,
+          ad_accounts (account_name)
+        `,
+        )
+        .order('spend_usd', { ascending: false });
+
+      if (accountId) {
+        query = query.eq('ad_account_id', accountId);
+      }
+      if (search) {
+        query = query.ilike('name', `%${search}%`);
+      }
+      return query;
+    };
+
+    const buildAdSetQuery = () => {
+      let query = supabase
+        .from('ad_sets')
+        .select('*')
+        .order('spend_usd', { ascending: false });
+
+      if (accountId) {
+        query = query.eq('ad_account_id', accountId);
+      }
+      return query;
+    };
+
+    const buildAdQuery = () => {
+      let query = supabase
+        .from('ads')
+        .select('*')
+        .order('spend_usd', { ascending: false });
+
+      if (accountId) {
+        query = query.eq('ad_account_id', accountId);
+      }
+      if (country) {
+        query = query.ilike('name', `%${country}%`);
+      }
+      return query;
+    };
+
+    // Fetch all data with pagination
+    const [campaigns, adSets, ads] = await Promise.all([
+      fetchAllWithPagination<any>(buildCampaignQuery),
+      fetchAllWithPagination<any>(buildAdSetQuery),
+      fetchAllWithPagination<any>(buildAdQuery),
     ]);
-
-    const campaigns = campaignsResult.data || [];
-    const adSets = adSetsResult.data || [];
-    const ads = adsResult.data || [];
 
     // If date range is specified, fetch aggregated data from daily_insights
     const dateRangeSpendByCampaign: Record<
@@ -558,19 +597,43 @@ export class CampaignsService {
 
     const supabase = this.supabaseService.getClient();
     const countries = new Set<string>();
+    const batchSize = 1000;
 
-    // Get all campaign, ad set, and ad names
-    const [campaignsResult, adSetsResult, adsResult] = await Promise.all([
-      supabase.from('campaigns').select('name'),
-      supabase.from('ad_sets').select('name'),
-      supabase.from('ads').select('name'),
+    // Helper function to fetch all names with pagination
+    const fetchAllNames = async (table: string): Promise<string[]> => {
+      const names: string[] = [];
+      let offset = 0;
+
+      while (true) {
+        const { data, error } = await supabase
+          .from(table)
+          .select('name')
+          .range(offset, offset + batchSize - 1);
+
+        if (error || !data || data.length === 0) {
+          break;
+        }
+
+        names.push(...data.map((row) => row.name));
+
+        if (data.length < batchSize) {
+          break;
+        }
+
+        offset += batchSize;
+      }
+
+      return names;
+    };
+
+    // Fetch all names from all tables with pagination
+    const [campaignNames, adSetNames, adNames] = await Promise.all([
+      fetchAllNames('campaigns'),
+      fetchAllNames('ad_sets'),
+      fetchAllNames('ads'),
     ]);
 
-    const allNames = [
-      ...(campaignsResult.data || []).map((c) => c.name),
-      ...(adSetsResult.data || []).map((a) => a.name),
-      ...(adsResult.data || []).map((a) => a.name),
-    ];
+    const allNames = [...campaignNames, ...adSetNames, ...adNames];
 
     for (const name of allNames) {
       const parsed = parseCountriesFromName(name);

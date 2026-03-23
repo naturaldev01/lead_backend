@@ -94,23 +94,39 @@ export class PerformanceService {
     let campaignSpend = new Map<string, { spend: number; leads: number }>();
     
     if (startDate && endDate) {
-      let insightsQuery = supabase
-        .from('daily_insights')
-        .select('campaign_id, spend_usd, leads_count')
-        .gte('date', startDate)
-        .lte('date', endDate);
+      // Fetch all insights with pagination
+      let offset = 0;
+      
+      while (true) {
+        let insightsQuery = supabase
+          .from('daily_insights')
+          .select('campaign_id, spend_usd, leads_count')
+          .gte('date', startDate)
+          .lte('date', endDate)
+          .range(offset, offset + this.batchSize - 1);
 
-      if (accountId) {
-        insightsQuery = insightsQuery.eq('ad_account_id', accountId);
-      }
+        if (accountId) {
+          insightsQuery = insightsQuery.eq('ad_account_id', accountId);
+        }
 
-      const { data: insights } = await insightsQuery;
+        const { data: insights, error } = await insightsQuery;
 
-      for (const insight of insights || []) {
-        const current = campaignSpend.get(insight.campaign_id) || { spend: 0, leads: 0 };
-        current.spend += parseFloat(insight.spend_usd) || 0;
-        current.leads += insight.leads_count || 0;
-        campaignSpend.set(insight.campaign_id, current);
+        if (error || !insights || insights.length === 0) {
+          break;
+        }
+
+        for (const insight of insights) {
+          const current = campaignSpend.get(insight.campaign_id) || { spend: 0, leads: 0 };
+          current.spend += parseFloat(insight.spend_usd) || 0;
+          current.leads += insight.leads_count || 0;
+          campaignSpend.set(insight.campaign_id, current);
+        }
+
+        if (insights.length < this.batchSize) {
+          break;
+        }
+
+        offset += this.batchSize;
       }
     } else {
       for (const campaign of campaigns) {
@@ -233,20 +249,36 @@ export class PerformanceService {
     const spendData = new Map<string, { spend: number; leads: number }>();
     
     if (startDate && endDate) {
-      let insightsQuery = supabase
-        .from('daily_insights')
-        .select('campaign_id, spend_usd, leads_count')
-        .in('campaign_id', campaignIds)
-        .gte('date', startDate)
-        .lte('date', endDate);
+      // Fetch insights with pagination
+      let offset = 0;
+      
+      while (true) {
+        let insightsQuery = supabase
+          .from('daily_insights')
+          .select('campaign_id, spend_usd, leads_count')
+          .in('campaign_id', campaignIds)
+          .gte('date', startDate)
+          .lte('date', endDate)
+          .range(offset, offset + this.batchSize - 1);
 
-      const { data: insights } = await insightsQuery;
+        const { data: insights, error } = await insightsQuery;
 
-      for (const insight of insights || []) {
-        const current = spendData.get(insight.campaign_id) || { spend: 0, leads: 0 };
-        current.spend += parseFloat(insight.spend_usd) || 0;
-        current.leads += insight.leads_count || 0;
-        spendData.set(insight.campaign_id, current);
+        if (error || !insights || insights.length === 0) {
+          break;
+        }
+
+        for (const insight of insights) {
+          const current = spendData.get(insight.campaign_id) || { spend: 0, leads: 0 };
+          current.spend += parseFloat(insight.spend_usd) || 0;
+          current.leads += insight.leads_count || 0;
+          spendData.set(insight.campaign_id, current);
+        }
+
+        if (insights.length < this.batchSize) {
+          break;
+        }
+
+        offset += this.batchSize;
       }
     } else {
       // Use data already fetched with campaigns (no additional queries needed)
@@ -332,28 +364,46 @@ export class PerformanceService {
   ): Promise<CreativePerformance[]> {
     const supabase = this.supabaseService.getClient();
 
-    // Get leads with ad names
-    let leadsQuery = supabase
-      .from('leads')
-      .select(`
-        id,
-        ad_name,
-        form_name,
-        campaign_id,
-        campaigns (ad_account_id)
-      `);
+    // Get leads with ad names - with pagination
+    const allLeads: any[] = [];
+    let offset = 0;
 
-    if (startDate) {
-      leadsQuery = leadsQuery.gte('created_at', startDate);
-    }
-    if (endDate) {
-      leadsQuery = leadsQuery.lte('created_at', endDate);
-    }
+    while (true) {
+      let leadsQuery = supabase
+        .from('leads')
+        .select(`
+          id,
+          ad_name,
+          form_name,
+          campaign_id,
+          campaigns (ad_account_id)
+        `)
+        .range(offset, offset + this.batchSize - 1);
 
-    const { data: leads } = await leadsQuery;
+      if (startDate) {
+        leadsQuery = leadsQuery.gte('created_at', startDate);
+      }
+      if (endDate) {
+        leadsQuery = leadsQuery.lte('created_at', endDate);
+      }
+
+      const { data: leads, error } = await leadsQuery;
+
+      if (error || !leads || leads.length === 0) {
+        break;
+      }
+
+      allLeads.push(...leads);
+
+      if (leads.length < this.batchSize) {
+        break;
+      }
+
+      offset += this.batchSize;
+    }
 
     // Filter by account if specified
-    let filteredLeads = leads || [];
+    let filteredLeads = allLeads;
     if (accountId) {
       filteredLeads = filteredLeads.filter(
         (l: any) => l.campaigns?.ad_account_id === accountId,
@@ -431,20 +481,36 @@ export class PerformanceService {
     let totalSpend = 0;
 
     if (startDate && endDate) {
-      let insightsQuery = supabase
-        .from('daily_insights')
-        .select('spend_usd, leads_count')
-        .gte('date', startDate)
-        .lte('date', endDate);
+      // Fetch insights with pagination
+      let offset = 0;
+      
+      while (true) {
+        let insightsQuery = supabase
+          .from('daily_insights')
+          .select('spend_usd, leads_count')
+          .gte('date', startDate)
+          .lte('date', endDate)
+          .range(offset, offset + this.batchSize - 1);
 
-      if (accountId) {
-        insightsQuery = insightsQuery.eq('ad_account_id', accountId);
-      }
+        if (accountId) {
+          insightsQuery = insightsQuery.eq('ad_account_id', accountId);
+        }
 
-      const { data: insights } = await insightsQuery;
+        const { data: insights, error } = await insightsQuery;
 
-      for (const insight of insights || []) {
-        totalSpend += parseFloat(insight.spend_usd) || 0;
+        if (error || !insights || insights.length === 0) {
+          break;
+        }
+
+        for (const insight of insights) {
+          totalSpend += parseFloat(insight.spend_usd) || 0;
+        }
+
+        if (insights.length < this.batchSize) {
+          break;
+        }
+
+        offset += this.batchSize;
       }
     } else {
       const { data } = await supabase.rpc('get_campaigns_totals', {
