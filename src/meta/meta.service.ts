@@ -6,14 +6,15 @@ import axios from 'axios';
 export class MetaService {
   private readonly logger = new Logger(MetaService.name);
   private readonly baseUrl: string;
+  private readonly apiVersion: string;
   private accessToken: string;
   private allowedAdAccounts: string[];
   private syncLookbackDays: number;
 
   constructor(private configService: ConfigService) {
-    const apiVersion =
-      this.configService.get<string>('META_API_VERSION') || 'v18.0';
-    this.baseUrl = `https://graph.facebook.com/${apiVersion}`;
+    this.apiVersion =
+      this.configService.get<string>('META_API_VERSION') || 'v25.0';
+    this.baseUrl = `https://graph.facebook.com/${this.apiVersion}`;
     this.accessToken =
       this.configService.get<string>('META_ACCESS_TOKEN') || '';
     this.allowedAdAccounts = (
@@ -33,6 +34,14 @@ export class MetaService {
 
   getSyncLookbackDays(): number {
     return this.syncLookbackDays;
+  }
+
+  getApiVersion(): string {
+    return this.apiVersion;
+  }
+
+  getBaseUrl(): string {
+    return this.baseUrl;
   }
 
   async getAdAccounts(): Promise<any[]> {

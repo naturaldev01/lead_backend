@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../common/supabase.service';
-import { chunkArray, isHrFormName } from './reporting-helpers';
+import { isHrFormName } from './reporting-helpers';
 
 export interface DashboardStatsV2 {
   spend: number;
@@ -31,8 +31,6 @@ export interface DashboardFilters {
 @Injectable()
 export class DashboardService {
   private readonly logger = new Logger(DashboardService.name);
-  private readonly queryBatchSize = 1000;
-  private readonly inBatchSize = 200;
 
   constructor(private supabaseService: SupabaseService) {}
 
@@ -94,153 +92,61 @@ export class DashboardService {
 
   async getStatsV2(filters: DashboardFilters): Promise<DashboardStatsV2> {
     const supabase = this.supabaseService.getClient();
-    const { startDate, endDate, accountId, objective, country, service, language } = filters;
+    const { startDate, endDate, accountId, country, service, language } = filters;
 
-    let totalSpend = 0;
+    // If country/service/language filters are present, use fallback with campaign filtering
+    const hasAdvancedFilters = !!(country || service || language);
 
-    // Get spend and leads from daily_insights or campaigns
-    if (startDate && endDate) {
-      // Fetch all daily_insights with pagination (Supabase default limit is 1000)
-      const allInsights: Array<{ spend_usd: any; leads_count: any; campaign_id: string }> = [];
-      let offset = 0;
-      const batchSize = 1000;
+    let spend = 0;
+    let leads = 0;
+    let deals = 0;
+    let revenue = 0;
+    let cpl = 0;
+    let roas = 0;
+    let leadToDealRate = 0;
+    let costPerDeal = 0;
+    let avgOfferAmount = 0;
+    let avgDealAmount = 0;
 
-      while (true) {
-        let query = supabase
-          .from('daily_insights')
-          .select('spend_usd, leads_count, campaign_id')
-          .gte('date', startDate)
-          .lte('date', endDate)
-          .range(offset, offset + batchSize - 1);
-
-        if (accountId) {
-          query = query.eq('ad_account_id', accountId);
-        }
-
-        const { data: insights, error } = await query;
-
-        if (error) {
-          this.logger.error('Failed to fetch daily_insights', error);
-          break;
-        }
-
-        if (!insights || insights.length === 0) {
-          break;
-        }
-
-        allInsights.push(...insights);
-
-        if (insights.length < batchSize) {
-          break;
-        }
-
-        offset += batchSize;
-      }
-
-      if (allInsights.length > 0) {
-        // Filter by campaign name patterns if service/country/language specified
-        let filteredInsights = allInsights;
-        
-        if (service || country || language) {
-          const campaignIds = [...new Set(allInsights.map(i => i.campaign_id))];
-          
-          // Fetch campaigns in batches too
-          const campaignMap = new Map<string, string>();
-          for (const chunk of chunkArray(campaignIds, this.inBatchSize)) {
-            const { data: campaigns } = await supabase
-              .from('campaigns')
-              .select('campaign_id, name')
-              .in('campaign_id', chunk);
-            
-            campaigns?.forEach(c => campaignMap.set(c.campaign_id, c.name));
-          }
-          
-          filteredInsights = allInsights.filter(i => {
-            const campaignName = campaignMap.get(i.campaign_id) || '';
-            if (service && !this.matchesService(campaignName, service)) return false;
-            if (country && !this.matchesCountry(campaignName, country)) return false;
-            if (language && !this.matchesLanguage(campaignName, language)) return false;
-            return true;
-          });
-        }
-
-        totalSpend = filteredInsights.reduce((sum, i) => sum + (parseFloat(i.spend_usd) || 0), 0);
-      }
+    if (hasAdvancedFilters) {
+      // Fallback: use campaign-level RPC and filter in JS
+      const stats = await this.getStatsV2WithAdvancedFilters(filters);
+      spend = stats.spend;
+      leads = stats.leads;
+      deals = stats.deals;
+      revenue = stats.revenue;
+      cpl = stats.cpl;
+      roas = stats.roas;
+      leadToDealRate = stats.leadToDealRate;
+      costPerDeal = stats.costPerDeal;
+      avgOfferAmount = stats.avgOfferAmount;
+      avgDealAmount = stats.avgDealAmount;
     } else {
-      const { data, error } = await supabase.rpc('get_campaigns_totals', {
-        account_id: accountId || null,
-        campaign_objective: objective || null,
+      // Fast path: single SQL RPC call
+      const { data, error } = await supabase.rpc('get_dashboard_stats_v2_rpc', {
+        p_start_date: startDate || null,
+        p_end_date: endDate || null,
+        p_account_id: accountId || null,
       });
 
-      if (!error && data) {
-        totalSpend = parseFloat(data.total_spend) || 0;
-      }
-    }
-
-    const eligibleLeads = await this.fetchEligibleLeads(filters);
-    const totalLeads = eligibleLeads.length;
-    const leadIds = eligibleLeads.map((lead) => lead.id);
-
-    // Get attribution metrics (deals, revenue, offers)
-    const attributions: Array<{
-      funnel_stage: string | null;
-      deal_amount: string | number | null;
-      offer_amount: string | number | null;
-      payment_amount: string | number | null;
-    }> = [];
-
-    for (const chunk of chunkArray(leadIds, this.inBatchSize)) {
-      const { data, error } = await supabase
-        .from('lead_attribution')
-        .select('funnel_stage, deal_amount, offer_amount, payment_amount')
-        .in('lead_id', chunk);
-
       if (error) {
-        this.logger.error('Failed to fetch filtered attributions for dashboard stats', error);
-        continue;
-      }
-
-      attributions.push(...(data || []));
-    }
-
-    let deals = 0;
-    let totalRevenue = 0;
-    let totalOfferAmount = 0;
-    let offerCount = 0;
-    let totalDealAmount = 0;
-    let dealAmountCount = 0;
-
-    if (attributions.length > 0) {
-      for (const attr of attributions) {
-        // Count deals (funnel_stage = 'deal' or 'payment')
-        if (attr.funnel_stage === 'deal' || attr.funnel_stage === 'payment') {
-          deals++;
-        }
-
-        // Sum revenue from deal_amount
-        if (attr.deal_amount) {
-          totalRevenue += parseFloat(String(attr.deal_amount)) || 0;
-          totalDealAmount += parseFloat(String(attr.deal_amount)) || 0;
-          dealAmountCount++;
-        }
-
-        // Sum offer amounts
-        if (attr.offer_amount) {
-          totalOfferAmount += parseFloat(String(attr.offer_amount)) || 0;
-          offerCount++;
-        }
+        this.logger.error('Failed to fetch dashboard stats v2 via RPC', error);
+      } else if (data && data.length > 0) {
+        const row = data[0];
+        spend = parseFloat(row.spend) || 0;
+        leads = parseInt(row.leads) || 0;
+        deals = parseInt(row.deals) || 0;
+        revenue = parseFloat(row.revenue) || 0;
+        cpl = parseFloat(row.cpl) || 0;
+        roas = parseFloat(row.roas) || 0;
+        leadToDealRate = parseFloat(row.lead_to_deal_rate) || 0;
+        costPerDeal = parseFloat(row.cost_per_deal) || 0;
+        avgOfferAmount = parseFloat(row.avg_offer_amount) || 0;
+        avgDealAmount = parseFloat(row.avg_deal_amount) || 0;
       }
     }
 
-    // Calculate derived metrics
-    const cpl = totalLeads > 0 ? totalSpend / totalLeads : 0;
-    const roas = totalSpend > 0 ? totalRevenue / totalSpend : 0;
-    const leadToDealRate = totalLeads > 0 ? (deals / totalLeads) * 100 : 0;
-    const costPerDeal = deals > 0 ? totalSpend / deals : 0;
-    const avgOfferAmount = offerCount > 0 ? totalOfferAmount / offerCount : 0;
-    const avgDealAmount = dealAmountCount > 0 ? totalDealAmount / dealAmountCount : 0;
-
-    // Get sync logs
+    // Get sync logs (already fast - single indexed query)
     const { data: syncLogs } = await supabase
       .from('sync_logs')
       .select('type, created_at')
@@ -253,11 +159,11 @@ export class DashboardService {
     );
 
     return {
-      spend: totalSpend,
-      leads: totalLeads,
+      spend,
+      leads,
       cpl,
       deals,
-      revenue: totalRevenue,
+      revenue,
       roas,
       leadToDealRate,
       costPerDeal,
@@ -265,6 +171,78 @@ export class DashboardService {
       avgDealAmount,
       lastSpendSync: spendSync?.created_at || null,
       lastLeadsSync: leadsSync?.created_at || null,
+    };
+  }
+
+  private async getStatsV2WithAdvancedFilters(filters: DashboardFilters): Promise<{
+    spend: number;
+    leads: number;
+    deals: number;
+    revenue: number;
+    cpl: number;
+    roas: number;
+    leadToDealRate: number;
+    costPerDeal: number;
+    avgOfferAmount: number;
+    avgDealAmount: number;
+  }> {
+    const supabase = this.supabaseService.getClient();
+    const { startDate, endDate, accountId, country, service, language } = filters;
+
+    // Get campaign performance data (already aggregated by SQL)
+    const { data: campaignData, error: campaignError } = await supabase.rpc(
+      'get_campaign_performance_rpc',
+      {
+        p_start_date: startDate || null,
+        p_end_date: endDate || null,
+        p_account_id: accountId || null,
+        p_limit: 10000,
+      },
+    );
+
+    if (campaignError) {
+      this.logger.error('Failed to fetch campaign performance for advanced filters', campaignError);
+      return { spend: 0, leads: 0, deals: 0, revenue: 0, cpl: 0, roas: 0, leadToDealRate: 0, costPerDeal: 0, avgOfferAmount: 0, avgDealAmount: 0 };
+    }
+
+    // Filter campaigns by country/service/language patterns
+    const filteredCampaigns = (campaignData || []).filter((c: any) => {
+      const campaignName = c.campaign_name || '';
+      if (service && !this.matchesService(campaignName, service)) return false;
+      if (country && !this.matchesCountry(campaignName, country)) return false;
+      if (language && !this.matchesLanguage(campaignName, language)) return false;
+      return true;
+    });
+
+    // Aggregate filtered results
+    let totalSpend = 0;
+    let totalLeads = 0;
+    let totalDeals = 0;
+    let totalRevenue = 0;
+
+    for (const c of filteredCampaigns) {
+      totalSpend += parseFloat(c.spend) || 0;
+      totalLeads += parseInt(c.leads) || 0;
+      totalDeals += parseInt(c.deals) || 0;
+      totalRevenue += parseFloat(c.revenue) || 0;
+    }
+
+    const cpl = totalLeads > 0 ? totalSpend / totalLeads : 0;
+    const roas = totalSpend > 0 ? totalRevenue / totalSpend : 0;
+    const leadToDealRate = totalLeads > 0 ? (totalDeals / totalLeads) * 100 : 0;
+    const costPerDeal = totalDeals > 0 ? totalSpend / totalDeals : 0;
+
+    return {
+      spend: totalSpend,
+      leads: totalLeads,
+      deals: totalDeals,
+      revenue: totalRevenue,
+      cpl,
+      roas,
+      leadToDealRate,
+      costPerDeal,
+      avgOfferAmount: 0,
+      avgDealAmount: totalDeals > 0 ? totalRevenue / totalDeals : 0,
     };
   }
 
@@ -293,79 +271,5 @@ export class DashboardService {
     const name = campaignName.toLowerCase();
     const lang = language.toLowerCase();
     return name.includes(lang);
-  }
-
-  private async fetchEligibleLeads(filters: DashboardFilters) {
-    const supabase = this.supabaseService.getClient();
-    const { startDate, endDate, accountId, country, service, language } = filters;
-    const leads: Array<{
-      id: string;
-      campaign_id: string | null;
-      form_name: string | null;
-      campaigns?: { name: string; ad_account_id: string | null } | null;
-    }> = [];
-    let offset = 0;
-
-    while (true) {
-      let query = supabase
-        .from('leads')
-        .select(
-          `
-          id,
-          campaign_id,
-          form_name,
-          campaigns (
-            name,
-            ad_account_id
-          )
-        `,
-        )
-        .order('created_at', { ascending: true })
-        .range(offset, offset + this.queryBatchSize - 1);
-
-      if (startDate) {
-        query = query.gte('created_at', startDate);
-      }
-      if (endDate) {
-        query = query.lte('created_at', endDate);
-      }
-
-      const { data, error } = await query;
-      if (error) {
-        this.logger.error('Failed to fetch eligible leads for dashboard reporting', error);
-        return [];
-      }
-
-      if (!data || data.length === 0) {
-        break;
-      }
-
-      for (const lead of data as any[]) {
-        const campaign = Array.isArray(lead.campaigns) ? lead.campaigns[0] : lead.campaigns;
-        const campaignName = campaign?.name || '';
-        if (isHrFormName(lead.form_name)) continue;
-        if (accountId && campaign?.ad_account_id !== accountId) continue;
-        if (service && !this.matchesService(campaignName, service)) continue;
-        if (country && !this.matchesCountry(campaignName, country)) continue;
-        if (language && !this.matchesLanguage(campaignName, language)) continue;
-
-        leads.push({
-          id: lead.id,
-          campaign_id: lead.campaign_id,
-          form_name: lead.form_name,
-          campaigns: campaign
-            ? { name: campaign.name, ad_account_id: campaign.ad_account_id }
-            : null,
-        });
-      }
-
-      if (data.length < this.queryBatchSize) {
-        break;
-      }
-
-      offset += this.queryBatchSize;
-    }
-
-    return leads;
   }
 }

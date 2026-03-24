@@ -2,6 +2,7 @@ import { Controller, Post, Get, Query, Logger } from '@nestjs/common';
 import { MetaService } from './meta.service';
 import { SupabaseService } from '../common/supabase.service';
 import { FieldMappingsService } from '../field-mappings/field-mappings.service';
+import { CacheService } from '../common/cache.service';
 
 interface SyncProgress {
   status: 'idle' | 'running' | 'completed' | 'error';
@@ -151,6 +152,7 @@ export class SyncController {
     private metaService: MetaService,
     private supabaseService: SupabaseService,
     private fieldMappingsService: FieldMappingsService,
+    private cacheService: CacheService,
   ) {}
 
   @Get('sync/progress')
@@ -320,7 +322,7 @@ export class SyncController {
 
       // Streaming: Sayfa sayfa çek ve hemen DB'ye yaz
       let nextUrl: string | null =
-        `https://graph.facebook.com/v19.0/${formId}/leads?access_token=${pageAccessToken}&fields=id,created_time,field_data,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,form_id&limit=100`;
+        `${this.metaService.getBaseUrl()}/${formId}/leads?access_token=${pageAccessToken}&fields=id,created_time,field_data,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,form_id&limit=100`;
       let pageNum = 0;
 
       while (nextUrl) {
@@ -470,7 +472,7 @@ export class SyncController {
         try {
           // Streaming pagination
           let nextUrl: string | null =
-            `https://graph.facebook.com/v19.0/${form.id}/leads?access_token=${page.access_token}&fields=id,created_time,field_data,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,form_id&limit=100`;
+            `${this.metaService.getBaseUrl()}/${form.id}/leads?access_token=${page.access_token}&fields=id,created_time,field_data,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,form_id&limit=100`;
 
           while (nextUrl) {
             const axios = require('axios');
@@ -823,6 +825,10 @@ export class SyncController {
           `Failed to write success sync log: ${syncLogError.message}`,
         );
       }
+
+      // Invalidate dashboard cache after sync
+      this.cacheService.invalidateByPrefix('dashboard:');
+      this.logger.log('Dashboard cache invalidated after sync');
 
       return { success: true, message: 'Sync completed successfully' };
     } catch (error) {

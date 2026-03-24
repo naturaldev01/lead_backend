@@ -14,7 +14,7 @@ export class CampaignsService {
   private countriesCache: string[] | null = null;
   private countriesCacheTime: number = 0;
   private hierarchyCache: Map<string, HierarchyCacheEntry> = new Map();
-  private readonly CACHE_TTL = 60 * 1000; // 1 minute for hierarchy
+  private readonly CACHE_TTL = 5 * 60 * 1000; // 5 minutes for hierarchy
   private readonly COUNTRIES_CACHE_TTL = 5 * 60 * 1000; // 5 minutes for countries
 
   constructor(
@@ -163,14 +163,7 @@ export class CampaignsService {
       return query;
     };
 
-    // Fetch all data with pagination
-    const [campaigns, adSets, ads] = await Promise.all([
-      fetchAllWithPagination<any>(buildCampaignQuery),
-      fetchAllWithPagination<any>(buildAdSetQuery),
-      fetchAllWithPagination<any>(buildAdQuery),
-    ]);
-
-    // If date range is specified, fetch aggregated data from daily_insights
+    // Aggregation maps for date range data
     const dateRangeSpendByCampaign: Record<
       string,
       { spend: number; leads: number }
@@ -182,47 +175,165 @@ export class CampaignsService {
     const dateRangeSpendByAd: Record<string, { spend: number; leads: number }> =
       {};
 
-    if (startDate && endDate) {
-      // Fetch with pagination to avoid Supabase default row limit truncating long date ranges.
+    // Fetch leads count aggregated by campaign
+    const fetchLeadsCountByCampaign = async (): Promise<
+      Record<string, number>
+    > => {
+      const { data, error } = await supabase
+        .rpc('get_leads_count_by_campaign')
+        .select('*')
+        .limit(10000);
+
+      if (error || !data) {
+        // Fallback: single query without pagination (Supabase will return up to 1000)
+        // For accurate counts, we need pagination but this is much faster
+        const { data: leadsData, count } = await supabase
+          .from('leads')
+          .select('campaign_id', { count: 'exact', head: false });
+
+        if (!leadsData) return {};
+
+        return leadsData.reduce((acc: Record<string, number>, lead) => {
+          if (lead.campaign_id) {
+            acc[lead.campaign_id] = (acc[lead.campaign_id] || 0) + 1;
+          }
+          return acc;
+        }, {});
+      }
+
+      return (data as { campaign_id: string; count: number }[]).reduce(
+        (acc: Record<string, number>, row) => {
+          acc[row.campaign_id] = row.count;
+          return acc;
+        },
+        {},
+      );
+    };
+
+    // Fetch date range insights using RPC (pre-aggregated) or fallback to batch fetching
+    const fetchDateRangeInsights = async (): Promise<void> => {
+      if (!startDate || !endDate) return;
+
+      // Try RPC first (much faster - single query with GROUP BY done in DB)
+      // Supabase JS client has default row limits. Using .select('*') and high limit.
+      const { data: rpcData, error: rpcError } = await supabase
+        .rpc('get_insights_aggregated', {
+          p_start_date: startDate,
+          p_end_date: endDate,
+          p_account_id: accountId || null,
+        })
+        .select('*')
+        .limit(50000); // High limit to get all aggregated rows
+
+      if (!rpcError && rpcData && rpcData.length > 0) {
+        // Process RPC results
+        let adCount = 0;
+        let totalAdSpend = 0;
+        for (const row of rpcData as {
+          level: string;
+          entity_id: string;
+          spend: number;
+          leads: number;
+        }[]) {
+          const spend = Number(row.spend) || 0;
+          const leads = Number(row.leads) || 0;
+
+          if (row.level === 'campaign' && row.entity_id) {
+            dateRangeSpendByCampaign[row.entity_id] = { spend, leads };
+          } else if (row.level === 'adset' && row.entity_id) {
+            dateRangeSpendByAdSet[row.entity_id] = { spend, leads };
+          } else if (row.level === 'ad' && row.entity_id) {
+            dateRangeSpendByAd[row.entity_id] = { spend, leads };
+            adCount++;
+            totalAdSpend += spend;
+          }
+        }
+        this.logger.log(
+          `RPC loaded ${adCount} ads with total spend $${totalAdSpend.toFixed(2)}, sample ad 120237160148030391: ${JSON.stringify(dateRangeSpendByAd['120237160148030391'])}`,
+        );
+        return;
+      }
+
+      // Fallback: batch fetch if RPC doesn't exist
+      this.logger.warn(
+        'RPC get_insights_aggregated not available, using fallback',
+      );
+
+      const batchSize = 1000;
+
+      const buildInsightsQuery = () => {
+        let q = supabase
+          .from('daily_insights')
+          .select('campaign_id, adset_id, ad_id, spend_usd, leads_count')
+          .gte('date', startDate)
+          .lte('date', endDate);
+        if (accountId) {
+          q = q.eq('ad_account_id', accountId);
+        }
+        return q;
+      };
+
+      // Fetch first batch to check if there's more data
+      const firstBatch = await buildInsightsQuery().range(0, batchSize - 1);
+
+      if (!firstBatch.data || firstBatch.data.length === 0) return;
+
       const allInsights: Array<{
         campaign_id: string | null;
         adset_id: string | null;
         ad_id: string | null;
         spend_usd: number | null;
         leads_count: number | null;
-      }> = [];
-      let insightsFrom = 0;
-      const insightsBatchSize = 1000;
-      let insightsHasMore = true;
+      }> = [...firstBatch.data];
 
-      while (insightsHasMore) {
-        let insightsQuery = supabase
-          .from('daily_insights')
-          .select('campaign_id, adset_id, ad_id, spend_usd, leads_count')
-          .gte('date', startDate)
-          .lte('date', endDate)
-          .range(insightsFrom, insightsFrom + insightsBatchSize - 1);
+      // If first batch is full, fetch ALL remaining batches in parallel waves
+      if (firstBatch.data.length === batchSize) {
+        let offset = batchSize;
+        let hasMore = true;
 
-        if (accountId) {
-          insightsQuery = insightsQuery.eq('ad_account_id', accountId);
-        }
+        while (hasMore) {
+          // Fetch 10 batches in parallel (10,000 rows at a time)
+          const parallelBatches = 10;
+          const batchPromises: ReturnType<typeof buildInsightsQuery>[] = [];
 
-        const { data: insightsBatch } = await insightsQuery;
+          for (let i = 0; i < parallelBatches; i++) {
+            batchPromises.push(
+              buildInsightsQuery().range(
+                offset + i * batchSize,
+                offset + (i + 1) * batchSize - 1,
+              ),
+            );
+          }
 
-        if (insightsBatch && insightsBatch.length > 0) {
-          allInsights.push(...insightsBatch);
-          insightsFrom += insightsBatchSize;
-          insightsHasMore = insightsBatch.length === insightsBatchSize;
-        } else {
-          insightsHasMore = false;
+          const results = await Promise.all(batchPromises);
+
+          let batchHadData = false;
+          for (const result of results) {
+            if (result.data && result.data.length > 0) {
+              allInsights.push(...result.data);
+              batchHadData = true;
+            }
+          }
+
+          // Check if last batch was full (more data might exist)
+          const lastResult = results[results.length - 1];
+          if (
+            !batchHadData ||
+            !lastResult.data ||
+            lastResult.data.length < batchSize
+          ) {
+            hasMore = false;
+          } else {
+            offset += parallelBatches * batchSize;
+          }
         }
       }
 
+      // Process all insights into aggregation maps
       for (const row of allInsights) {
         const spend = Number(row.spend_usd) || 0;
         const leads = row.leads_count || 0;
 
-        // Aggregate by campaign
         if (row.campaign_id) {
           if (!dateRangeSpendByCampaign[row.campaign_id]) {
             dateRangeSpendByCampaign[row.campaign_id] = { spend: 0, leads: 0 };
@@ -231,7 +342,6 @@ export class CampaignsService {
           dateRangeSpendByCampaign[row.campaign_id].leads += leads;
         }
 
-        // Aggregate by ad set
         if (row.adset_id) {
           if (!dateRangeSpendByAdSet[row.adset_id]) {
             dateRangeSpendByAdSet[row.adset_id] = { spend: 0, leads: 0 };
@@ -240,7 +350,6 @@ export class CampaignsService {
           dateRangeSpendByAdSet[row.adset_id].leads += leads;
         }
 
-        // Aggregate by ad
         if (row.ad_id) {
           if (!dateRangeSpendByAd[row.ad_id]) {
             dateRangeSpendByAd[row.ad_id] = { spend: 0, leads: 0 };
@@ -249,37 +358,19 @@ export class CampaignsService {
           dateRangeSpendByAd[row.ad_id].leads += leads;
         }
       }
-    }
+    };
 
-    // Fetch all leads with pagination to overcome Supabase 1000 row limit
-    const allLeads: { campaign_id: string }[] = [];
-    let from = 0;
-    const batchSize = 1000;
-    let hasMore = true;
+    // Fetch ALL data in parallel: campaigns, adSets, ads, leads count, and date range insights
+    const [campaigns, adSets, ads, leadsCountByCampaign] = await Promise.all([
+      fetchAllWithPagination<any>(buildCampaignQuery),
+      fetchAllWithPagination<any>(buildAdSetQuery),
+      fetchAllWithPagination<any>(buildAdQuery),
+      fetchLeadsCountByCampaign(),
+      fetchDateRangeInsights(), // This runs in parallel but doesn't return a value we destructure
+    ]);
 
-    while (hasMore) {
-      const { data: leadsBatch } = await supabase
-        .from('leads')
-        .select('campaign_id')
-        .range(from, from + batchSize - 1);
-
-      if (leadsBatch && leadsBatch.length > 0) {
-        allLeads.push(...leadsBatch);
-        from += batchSize;
-        hasMore = leadsBatch.length === batchSize;
-      } else {
-        hasMore = false;
-      }
-    }
-
-    const leadsCountByCampaign = allLeads.reduce(
-      (acc: Record<string, number>, lead) => {
-        if (lead.campaign_id) {
-          acc[lead.campaign_id] = (acc[lead.campaign_id] || 0) + 1;
-        }
-        return acc;
-      },
-      {},
+    this.logger.log(
+      `After Promise.all - dateRangeSpendByAd has ${Object.keys(dateRangeSpendByAd).length} entries, sample: ${JSON.stringify(dateRangeSpendByAd['120237160148030391'])}`,
     );
 
     const adsGroupedByAdSet = ads.reduce(

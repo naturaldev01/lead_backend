@@ -5,6 +5,7 @@ import { MetaService } from '../meta/meta.service';
 @Injectable()
 export class SubscriptionsService {
   private readonly logger = new Logger(SubscriptionsService.name);
+  private readonly CONCURRENCY_LIMIT = 5;
 
   constructor(
     private supabaseService: SupabaseService,
@@ -36,11 +37,31 @@ export class SubscriptionsService {
     }));
   }
 
+  private async runWithConcurrencyLimit<T, R>(
+    items: T[],
+    limit: number,
+    fn: (item: T) => Promise<R>,
+  ): Promise<PromiseSettledResult<R>[]> {
+    const results: PromiseSettledResult<R>[] = [];
+
+    for (let i = 0; i < items.length; i += limit) {
+      const batch = items.slice(i, i + limit);
+      const batchResults = await Promise.allSettled(batch.map(fn));
+      results.push(...batchResults);
+    }
+
+    return results;
+  }
+
   async refreshSubscriptions() {
     const supabase = this.supabaseService.getClient();
 
     try {
       const { data: accounts } = await supabase.from('ad_accounts').select('*');
+
+      if (!accounts || accounts.length === 0) {
+        return [];
+      }
 
       const subscriptions: Array<{
         id: string;
@@ -53,7 +74,7 @@ export class SubscriptionsService {
         lastError: string | null;
       }> = [];
 
-      for (const account of accounts || []) {
+      const processAccount = async (account: any) => {
         try {
           const status = await this.metaService.getSubscriptionStatus(
             account.account_id,
@@ -76,7 +97,7 @@ export class SubscriptionsService {
             .single();
 
           if (sub) {
-            subscriptions.push({
+            return {
               id: sub.id,
               accountName: account.account_name,
               accountId: account.account_id,
@@ -85,8 +106,9 @@ export class SubscriptionsService {
               lastAttempt: sub.last_attempt,
               lastSuccess: sub.last_success,
               lastError: sub.last_error,
-            });
+            };
           }
+          return null;
         } catch (error) {
           this.logger.error(
             `Failed to check subscription for ${account.account_id}`,
@@ -102,6 +124,20 @@ export class SubscriptionsService {
             },
             { onConflict: 'ad_account_id' },
           );
+
+          return null;
+        }
+      };
+
+      const results = await this.runWithConcurrencyLimit(
+        accounts,
+        this.CONCURRENCY_LIMIT,
+        processAccount,
+      );
+
+      for (const result of results) {
+        if (result.status === 'fulfilled' && result.value) {
+          subscriptions.push(result.value);
         }
       }
 
@@ -118,7 +154,11 @@ export class SubscriptionsService {
     try {
       const { data: accounts } = await supabase.from('ad_accounts').select('*');
 
-      for (const account of accounts || []) {
+      if (!accounts || accounts.length === 0) {
+        return { success: true };
+      }
+
+      const processAccount = async (account: any) => {
         try {
           await this.metaService.subscribeToWebhook(account.account_id);
 
@@ -132,6 +172,8 @@ export class SubscriptionsService {
             },
             { onConflict: 'ad_account_id' },
           );
+
+          return { success: true, accountId: account.account_id };
         } catch (error) {
           this.logger.error(`Failed to subscribe ${account.account_id}`, error);
 
@@ -144,8 +186,16 @@ export class SubscriptionsService {
             },
             { onConflict: 'ad_account_id' },
           );
+
+          return { success: false, accountId: account.account_id, error: (error as Error).message };
         }
-      }
+      };
+
+      await this.runWithConcurrencyLimit(
+        accounts,
+        this.CONCURRENCY_LIMIT,
+        processAccount,
+      );
 
       return { success: true };
     } catch (error) {

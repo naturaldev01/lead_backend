@@ -16,7 +16,7 @@ const { createClient } = require('@supabase/supabase-js');
 
 // Configuration from .env
 const CONFIG = {
-  META_API_VERSION: 'v19.0',
+  META_API_VERSION: 'v25.0',
   META_ACCESS_TOKEN: process.env.META_ACCESS_TOKEN || 'EAANCZADF2M4EBQsZB7SObcvZCLLN0D7RuyLJwNq2C2uEN1j3VWncIBBZBOn2PW0ckFpPYM3XbZCaSNaUthm5ZCMZCTGu0l9fWBwlSfiyHFTp6MjAbL1r0ZBPBORql3khThjMhM0EiBmxLypCZCx5Ueo5DNPuXkqyeX7qd9ABZBlKGOTdWF3YJBBLAbBG8yjPk53wZDZD',
   SUPABASE_URL: process.env.SUPABASE_URL || 'https://huftlaoyxetncdkpelkj.supabase.co',
   SUPABASE_SERVICE_KEY: process.env.SUPABASE_SERVICE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh1ZnRsYW95eGV0bmNka3BlbGtqIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MTU4MjUwMCwiZXhwIjoyMDg3MTU4NTAwfQ.1RlikN7joKJgRyDycj-CDxXUuOoPvT37y0j4enFtcXc',
