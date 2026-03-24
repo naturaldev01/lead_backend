@@ -306,6 +306,10 @@ export class MetaService {
           const errorCode = error.response?.data?.error?.code;
           const statusCode = error.response?.status;
           const errorMsg = error.message || '';
+          const metaErrorMessage = error.response?.data?.error?.message || '';
+          const metaErrorType = error.response?.data?.error?.type || '';
+          const fullErrorDetails = `Status: ${statusCode}, Code: ${errorCode}, Type: ${metaErrorType}, Meta Message: ${metaErrorMessage}, Error: ${errorMsg}`;
+          
           const isRateLimit = errorCode === 4 || errorCode === 17;
           const isServerError =
             statusCode >= 500 ||
@@ -313,24 +317,30 @@ export class MetaService {
             error.code === 'ECONNRESET';
           const isTimeout =
             errorMsg.includes('timeout') || error.code === 'ECONNABORTED';
+          const isTokenError = errorCode === 190 || metaErrorType === 'OAuthException';
 
-          if (
+          if (isTokenError) {
+            this.logger.error(
+              `TOKEN ERROR for batch ${batch.start} to ${batch.end}: ${fullErrorDetails}. Access token may be expired or invalid.`,
+            );
+            break;
+          } else if (
             (isRateLimit || isServerError || isTimeout) &&
             retries < maxRetries
           ) {
-            const waitTime = Math.pow(2, retries) * 15000; // Exponential backoff: 30s, 60s, 120s, 240s
+            const waitTime = Math.pow(2, retries) * 15000;
             this.logger.warn(
-              `Retriable error for batch ${batch.start} to ${batch.end} (${errorMsg}). Waiting ${waitTime / 1000}s before retry ${retries}/${maxRetries}`,
+              `Retriable error for batch ${batch.start} to ${batch.end}. ${fullErrorDetails}. Waiting ${waitTime / 1000}s before retry ${retries}/${maxRetries}`,
             );
             await this.sleep(waitTime);
           } else if (retries >= maxRetries) {
             this.logger.error(
-              `Failed batch ${batch.start} to ${batch.end} after ${maxRetries} retries: ${errorMsg}`,
+              `Failed batch ${batch.start} to ${batch.end} after ${maxRetries} retries: ${fullErrorDetails}`,
             );
             break;
           } else {
             this.logger.error(
-              `Non-retriable error for batch ${batch.start} to ${batch.end}: ${errorMsg}`,
+              `Non-retriable error for batch ${batch.start} to ${batch.end}: ${fullErrorDetails}`,
             );
             break;
           }
@@ -406,6 +416,12 @@ export class MetaService {
           retries++;
           const errorMsg = error.message || '';
           const statusCode = error.response?.status;
+          const errorCode = error.response?.data?.error?.code;
+          const metaErrorMessage = error.response?.data?.error?.message || '';
+          const metaErrorType = error.response?.data?.error?.type || '';
+          const fullErrorDetails = `Status: ${statusCode}, Code: ${errorCode}, Type: ${metaErrorType}, Meta Message: ${metaErrorMessage}, Error: ${errorMsg}`;
+          
+          const isTokenError = errorCode === 190 || metaErrorType === 'OAuthException';
           const isRetriable =
             statusCode >= 500 ||
             statusCode === 400 ||
@@ -414,15 +430,20 @@ export class MetaService {
             error.code === 'ECONNRESET' ||
             error.code === 'ECONNABORTED';
 
-          if (isRetriable && retries < maxRetries) {
-            const waitTime = Math.pow(2, retries) * 20000; // 40s, 80s, 160s, 320s
+          if (isTokenError) {
+            this.logger.error(
+              `TOKEN ERROR for batch ${batch.start} to ${batch.end}: ${fullErrorDetails}. Access token may be expired or invalid.`,
+            );
+            break;
+          } else if (isRetriable && retries < maxRetries) {
+            const waitTime = Math.pow(2, retries) * 20000;
             this.logger.warn(
-              `Retry ${retries}/${maxRetries} for batch ${batch.start} to ${batch.end} (${errorMsg}). Waiting ${waitTime / 1000}s`,
+              `Retry ${retries}/${maxRetries} for batch ${batch.start} to ${batch.end}. ${fullErrorDetails}. Waiting ${waitTime / 1000}s`,
             );
             await this.sleep(waitTime);
           } else {
             this.logger.error(
-              `Failed batch ${batch.start} to ${batch.end} after ${retries} retries: ${errorMsg}`,
+              `Failed batch ${batch.start} to ${batch.end} after ${retries} retries: ${fullErrorDetails}`,
             );
             break;
           }
